@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Startup command",
+    "description": "Runs a PowerShell preset when DSH starts, shows live output and preset controls in the left sidebar, and terminates the process tree when DSH exits."
+  }
+}

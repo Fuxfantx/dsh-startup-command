@@ -1,0 +1,8 @@
+- insert:
+    - id: startup-command
+      name: 'dsh-startup-command'
+      config:
+        command: ''
+        script: startup.ps1
+        graceMs: 3000
+        cleanupTimeoutMs: 10000

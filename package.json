@@ -1,0 +1,53 @@
+{
+  "name": "dsh-startup-command",
+  "version": "1.4.8",
+  "description": "Runs enabled PowerShell, CMD, Bash and Python presets when DSH starts, shows live output and preset management in the left sidebar, and terminates each managed process tree on stop, restart, disable, or exit.",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./icon": "./icon.svg",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "startup.ps1",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "author": "Fuxfantx",
+  "license": "MIT-0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Fuxfantx/dsh-startup-command.git"
+  },
+  "homepage": "https://github.com/Fuxfantx/dsh-startup-command#readme",
+  "bugs": {
+    "url": "https://github.com/Fuxfantx/dsh-startup-command/issues"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "startup",
+    "process-manager",
+    "powershell",
+    "cordis-plugin"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true
+    }
+  }
+}
