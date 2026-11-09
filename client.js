@@ -897,12 +897,25 @@ window.__ModuleLoader__.load({
       React.useEffect(() => {
         let alive = true
         let loading = false
+        let timer = null
+        const schedule = (delay) => {
+          if (!alive) return
+          if (timer !== null) window.clearTimeout(timer)
+          timer = window.setTimeout(() => {
+            timer = null
+            void load()
+          }, delay)
+        }
         const load = async () => {
-          if (loading) return
-          if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
+          if (!alive || loading) return
+          if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+            schedule(10000)
+            return
+          }
           loading = true
+          let next
           try {
-            const next = await call('state')
+            next = await call('state')
             if (!alive) return
             setSnapshot(next)
             setPollError('')
@@ -914,13 +927,26 @@ window.__ModuleLoader__.load({
             }
           } finally {
             loading = false
+            if (alive) {
+              const running = next?.presets?.some((preset) => preset.running === true) === true
+              schedule(running ? 1000 : 5000)
+            }
           }
         }
-        load()
-        const timer = window.setInterval(load, 1000)
+        const onVisibility = () => {
+          if (document.visibilityState !== 'visible') return
+          if (timer !== null) {
+            window.clearTimeout(timer)
+            timer = null
+          }
+          void load()
+        }
+        document.addEventListener('visibilitychange', onVisibility)
+        void load()
         return () => {
           alive = false
-          window.clearInterval(timer)
+          if (timer !== null) window.clearTimeout(timer)
+          document.removeEventListener('visibilitychange', onVisibility)
         }
       }, [t])
 
