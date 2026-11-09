@@ -1,6 +1,6 @@
 ﻿# DSH Startup command — Install / 安装
 
-Version / 版本: **1.5.1**
+Version / 版本: **1.6.0**
 
 ## Offline / 离线安装
 
@@ -13,6 +13,7 @@ Version / 版本: **1.5.1**
 
 The package has no npm dependencies and installs without network access.
 本包没有 npm 依赖，安装无需联网。
+
 
 
 

@@ -170,8 +170,10 @@ function killWindowsTree(pid) {
 async function readPid(path) {
   if (path === '') return 0
   try {
-    const value = Number.parseInt((await readFile(path, 'utf8')).trim(), 10)
-    return Number.isFinite(value) && value > 0 ? value : 0
+    const raw = (await readFile(path, 'utf8')).trim()
+    if (!/^\d+$/u.test(raw)) return 0
+    const value = Number.parseInt(raw, 10)
+    return Number.isSafeInteger(value) && value > 0 ? value : 0
   } catch {
     return 0
   }
@@ -258,6 +260,7 @@ function readJson(req) {
       }
     })
     req.on('error', rejectBody)
+    req.on('aborted', () => rejectBody(httpError(400, 'request aborted')))
   })
 }
 
@@ -372,7 +375,8 @@ class StartupController {
 
   /** Record a state change for pollers. */
   touch() {
-    this.updatedAt = Date.now()
+    const now = Date.now()
+    this.updatedAt = now > this.updatedAt ? now : this.updatedAt + 1
   }
 
   /** A fresh run record. */
@@ -494,19 +498,20 @@ class StartupController {
     this.touch()
   }
 
+  /** Remove a PID file without waiting for the filesystem. */
+  clearPidFile(record) {
+    const path = record.pidPath
+    record.pidPath = ''
+    if (path !== '') void unlink(path).catch(() => {})
+  }
+
   /** Terminate one preset's managed range and wait for quiescence. */
-  async stopPreset(id, reason) {
+  async stopPreset(id) {
     const record = this.processes.get(id)
     if (record === undefined) return
     if (record.handle === null) {
-      const stalePid = await readPid(record.pidPath)
-      if (process.platform === 'win32' && stalePid > 0) await killWindowsTree(stalePid)
-      try {
-        await unlink(record.pidPath)
-      } catch {
-        // The PID file may already be gone.
-      }
-      record.pidPath = ''
+      record.generation += 1
+      this.clearPidFile(record)
       return
     }
     record.generation += 1
@@ -536,17 +541,12 @@ class StartupController {
         this.logger.warn(`[${SCOPE}] process range ${id} did not settle: ${String(retryError)}`)
       }
     }
-    try {
-      await unlink(record.pidPath)
-    } catch {
-      // The PID file may already be gone.
-    }
-    record.pidPath = ''
+    this.clearPidFile(record)
   }
 
   /** Stop every managed process range. */
-  async stopAll(reason) {
-    await Promise.all([...this.processes.keys()].map((id) => this.stopPreset(id, reason)))
+  async stopAll() {
+    await Promise.all([...this.processes.keys()].map((id) => this.stopPreset(id)))
   }
 
   /** Resolve one executable for a shell kind. */
@@ -559,6 +559,7 @@ class StartupController {
     try {
       return { kind, executable: await this.ctx.subprocess.resolveExecutable(requested, process.env) }
     } catch (error) {
+      if (explicit !== '') throw error
       const executable = fallbackShell(kind)
       if (executable === '') throw error
       return { kind, executable }
@@ -580,10 +581,10 @@ class StartupController {
   }
 
   /** Start one preset, replacing its own previous process only. */
-  async startPreset(id, reason) {
+  async startPreset(id) {
     const preset = this.data.presets.find((candidate) => candidate.id === id)
     if (preset === undefined) return
-    await this.stopPreset(id, reason)
+    await this.stopPreset(id)
     const record = this.recordFor(id, preset)
     record.run = this.blankRun(preset)
     record.output = ''
@@ -651,6 +652,7 @@ class StartupController {
       this.append(outDecoder.end(), id, generation)
       this.append(errDecoder.end(), id, generation)
       if (record.handle === handle) record.handle = null
+      this.clearPidFile(record)
       record.run.endedAt = Date.now()
       record.run.exitCode = outcome.exitCode
       record.run.signal = outcome.signal
@@ -666,6 +668,7 @@ class StartupController {
       this.append(outDecoder.end(), id, generation)
       this.append(errDecoder.end(), id, generation)
       if (record.handle === handle) record.handle = null
+      this.clearPidFile(record)
       record.run.status = 'failed'
       record.run.endedAt = Date.now()
       record.run.error = `Process failed: ${String(error)}`
@@ -674,10 +677,10 @@ class StartupController {
   }
 
   /** Start enabled presets in list order, 500 ms apart. */
-  async startEnabled(reason) {
+  async startEnabled() {
     const enabled = this.data.presets.filter((preset) => preset.enabled === true)
     for (let index = 0; index < enabled.length; index += 1) {
-      await this.startPreset(enabled[index].id, reason)
+      await this.startPreset(enabled[index].id)
       if (index < enabled.length - 1) {
         await new Promise((resolveDelay) => setTimeout(resolveDelay, START_INTERVAL_MS))
       }
@@ -729,8 +732,8 @@ class StartupController {
       this.touch()
       return this.snapshot()
     }
-    if (preset.enabled) await this.startPreset(preset.id, 'preset saved')
-    else await this.stopPreset(preset.id, 'preset disabled')
+    if (preset.enabled) await this.startPreset(preset.id)
+    else await this.stopPreset(preset.id)
     return this.snapshot()
   }
 
@@ -739,13 +742,13 @@ class StartupController {
     const id = text(payload?.id)
     if (id === '') throw httpError(400, 'Preset id is required')
     if (!this.data.presets.some((preset) => preset.id === id)) throw httpError(404, 'Preset not found')
-    await this.stopPreset(id, 'preset deleted')
+    await this.stopPreset(id)
     this.processes.delete(id)
     const presets = this.data.presets.filter((preset) => preset.id !== id)
     const activeId = this.data.activeId === id ? presets[0]?.id ?? null : this.data.activeId
     await this.commit({ version: 1, activeId, presets })
     const next = presets.find((preset) => preset.id === activeId)
-    if (next?.enabled === true) await this.startPreset(next.id, 'preset deleted')
+    if (next?.enabled === true && this.processes.get(next.id)?.handle == null) await this.startPreset(next.id)
     return this.snapshot()
   }
 
@@ -761,7 +764,7 @@ class StartupController {
     } else if (this.data.activeId !== id) {
       await this.commit({ version: 1, activeId: id, presets: this.data.presets })
     }
-    await this.startPreset(id, 'preset selected')
+    if (this.processes.get(id)?.handle == null) await this.startPreset(id)
     return this.snapshot()
   }
 
@@ -773,8 +776,8 @@ class StartupController {
     if (preset === undefined) throw httpError(404, 'Preset not found')
     preset.enabled = enabled
     await this.commit({ version: 1, activeId: this.data.activeId, presets: this.data.presets })
-    if (enabled) await this.startPreset(id, 'preset enabled')
-    else await this.stopPreset(id, 'preset disabled')
+    if (enabled) await this.startPreset(id)
+    else await this.stopPreset(id)
     return this.snapshot()
   }
 
@@ -797,14 +800,14 @@ class StartupController {
 
   /** Restart every enabled preset after stopping all managed ranges. */
   async restart() {
-    await this.stopAll('manual restart')
-    await this.startEnabled('manual restart')
+    await this.stopAll()
+    await this.startEnabled()
     return this.snapshot()
   }
 
   /** Stop every managed preset, preserving the enabled switches. */
   async stop() {
-    await this.stopAll('stopped by user')
+    await this.stopAll()
     return this.snapshot()
   }
 
@@ -816,7 +819,7 @@ class StartupController {
 
   /** Stop every managed range when the plugin is unloaded. */
   async dispose() {
-    await this.stopAll('plugin disposed')
+    await this.stopAll()
   }
 }
 
@@ -846,6 +849,17 @@ export async function apply(ctx, config = {}) {
     restart: () => controller.restart(),
     stop: () => controller.stop(),
     clear: () => controller.clear(),
+  }
+
+  let mutationQueue = Promise.resolve()
+  const mutate = (operation) => {
+    const result = mutationQueue.then(operation, operation)
+    mutationQueue = result.catch(() => {})
+    return result
+  }
+  for (const method of ['save', 'remove', 'select', 'toggle', 'move', 'restart', 'stop', 'clear']) {
+    const operation = api[method]
+    api[method] = (payload) => mutate(() => operation(payload))
   }
 
   ctx.effect(() => ctx.webServer.register({
@@ -885,8 +899,9 @@ export async function apply(ctx, config = {}) {
     }), `${SCOPE}: api route`)
 
   try {
-    await controller.startEnabled('DSH started')
+    await mutate(() => controller.startEnabled())
   } catch (error) {
     logger.error(`[${SCOPE}] cannot start the enabled presets: ${String(error)}`)
   }
 }
+

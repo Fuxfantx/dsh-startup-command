@@ -14,7 +14,7 @@
 - 多个 Preset 可独立启用；启用项按列表顺序启动，相邻启动间隔 500 ms。
 - 使用 ↑ / ↓ 调整顺序，顺序在下次启动或重启时生效。
 - 实时查看选中 Preset 的 ANSI 彩色输出，最多保留 256 KiB。
-- 停止、重启、保存或切换 Preset、停用插件、退出 DSH 时清理对应进程树。
+- 停止、重启、保存有变更的 Preset、停用或退出 DSH 时清理对应进程树；选择已运行的 Preset 不会重启它。
 - 页面跟随 DSH 的浅色 / 深色主题。
 - 中文 / English 双语界面。
 
@@ -53,7 +53,7 @@ Preset 保存在 DSH Profile 目录下的 `startup-command-presets.json`：
 
 - 指令通过 DSH 的 `ctx.subprocess` 启动；Windows 下进入 Job Object，并隐藏控制台窗口。
 - 启用项按数组顺序启动；一次启动多个 Preset 时，相邻两次启动间隔 500 ms。
-- 停止、重启、保存 / 切换 Preset、停用插件或退出 DSH 时，会终止对应托管进程范围并等待退出；超时会重试。
+- 停止、重启、保存有变更的 Preset、停用插件或退出 DSH 时，会终止对应托管进程范围并等待退出；超时会重试。选择已运行的 Preset 只切换显示，不会重启进程。
 - ANSI SGR 颜色（16 色、256 色、RGB）渲染为彩色文本，非 SGR 控制序列会被移除。
 - 浏览器按运行状态自适应读取状态：有进程运行时每 1 秒，空闲时每 5 秒，页面隐藏时暂停即时轮询。
 
@@ -75,8 +75,8 @@ Runs presets in a user-defined order when DSH starts, streams their output in th
 - Multiple presets can be enabled independently; enabled presets start in list order, 500 ms apart.
 - Reorder with ↑ / ↓; the new order applies on the next start or restart.
 - Live ANSI-colored output for the selected preset, capped at 256 KiB.
-- Process-tree cleanup on stop, restart, save/switch, plugin disable, and DSH exit.
-- Follows the DSH light/dark theme.
+- Process-tree cleanup on stop, restart, a changed save, disable, or DSH exit; selecting a running preset no longer restarts it.
+- Matches the DSH light/dark theme.
 - Bilingual Chinese / English UI.
 
 ### Install
@@ -114,7 +114,7 @@ Array order is execution order. Output is held in Host memory and cleared when D
 
 - Commands launch through DSH's `ctx.subprocess`; on Windows they join a Job object and use hidden-window flags.
 - Enabled presets start in array order; when several start together, launches are 500 ms apart.
-- Stop, restart, save/switch, plugin disable, and DSH exit terminate the managed process ranges and wait for them; timeouts retry termination.
+- Stop, restart, a changed save, plugin disable, and DSH exit terminate the managed process ranges and wait for them; timeouts retry termination. Selecting a running preset only switches the view.
 - ANSI SGR colors (16-color, 256-color, RGB) render as styled text; other control sequences are removed.
 - The browser polls state adaptively: once per second while running, every 5 seconds while idle, and pauses immediate polling while the page is hidden.
 

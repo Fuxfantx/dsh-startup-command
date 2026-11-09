@@ -2,7 +2,7 @@
  * Browser half of the startup-command bundle.
  *
  * Adds a left-sidebar panel entry and its main-column page. The page streams
- * the current PowerShell output and manages the persisted presets through the
+ * the selected preset's output and manages the persisted presets through the
  * Host's same-origin API.
  *
  * @module dsh-startup-command/client
@@ -72,6 +72,7 @@ window.__ModuleLoader__.load({
       'form.nameRequired': '请填写名称',
       'busy.save': '保存中…',
       'busy.select': '切换中…',
+      'busy.toggle': '更新中…',
       'busy.remove': '删除中…',
       'busy.restart': '重启中…',
       'busy.move': '调整顺序…',
@@ -134,6 +135,7 @@ window.__ModuleLoader__.load({
       'form.nameRequired': 'Name is required',
       'busy.save': 'Saving…',
       'busy.select': 'Switching…',
+      'busy.toggle': 'Updating…',
       'busy.remove': 'Deleting…',
       'busy.restart': 'Restarting…',
       'busy.move': 'Reordering…',
@@ -917,7 +919,11 @@ window.__ModuleLoader__.load({
           try {
             next = await call('state')
             if (!alive) return
-            setSnapshot(next)
+            setSnapshot((current) => (
+              current?.updatedAt === next?.updatedAt && current?.outputSeq === next?.outputSeq
+                ? current
+                : next
+            ))
             setPollError('')
           } catch (error) {
             if (alive) {
