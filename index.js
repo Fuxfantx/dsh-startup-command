@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Host half of the startup-command bundle.
  *
  * Owns the preset store, the currently running PowerShell process, and its
@@ -162,7 +162,7 @@ function fallbackShell(kind) {
 /** Kill one Windows process tree, including Job/breakaway descendants. */
 function killWindowsTree(pid) {
   return new Promise((resolveKill) => {
-    execFile('taskkill.exe', ['/T', '/F', '/PID', String(pid)], { windowsHide: true }, () => resolveKill())
+    execFile('taskkill.exe', ['/T', '/F', '/PID', String(pid)], { windowsHide: true, timeout: 10000 }, () => resolveKill())
   })
 }
 
@@ -416,33 +416,34 @@ class StartupController {
     const activeId = this.data.activeId
     const active = activeId === null ? undefined : this.data.presets.find((preset) => preset.id === activeId)
     const activeRecord = activeId === null ? undefined : this.processes.get(activeId)
-    const running = this.data.presets.filter((preset) => {
+    const views = this.data.presets.map((preset) => {
       const record = this.processes.get(preset.id)
-      return record?.handle !== null && record?.handle !== undefined
+      return {
+        ...preset,
+        running: record?.handle !== null && record?.handle !== undefined,
+        run: { ...(record?.run ?? this.blankRun(preset)) },
+        record,
+      }
     })
+    const running = views.filter((view) => view.running)
     let status = 'idle'
     let error = null
     let startedAt = null
     if (running.length > 0) {
       status = 'running'
-      startedAt = Math.min(...running.map((preset) => this.processes.get(preset.id)?.run.startedAt ?? Date.now()))
+      startedAt = Math.min(...running.map((view) => view.record.run.startedAt ?? Date.now()))
     }
     if (activeRecord !== undefined && activeRecord.run.status === 'failed') {
       status = 'failed'
       error = activeRecord.run.error
     }
-    for (const preset of this.data.presets) {
-      const record = this.processes.get(preset.id)
-      if (record?.run.error && error === null) error = record.run.error
+    for (const view of views) {
+      if (view.record?.run.error && error === null) error = view.record.run.error
     }
     return {
       activeId,
       activeName: active?.name ?? '',
-      presets: this.data.presets.map((preset) => ({
-        ...preset,
-        running: this.processes.get(preset.id)?.handle !== null && this.processes.get(preset.id)?.handle !== undefined,
-        run: { ...(this.processes.get(preset.id)?.run ?? this.blankRun(preset)) },
-      })),
+      presets: views.map(({ record, ...view }) => view),
       run: {
         status,
         presetId: activeId,
@@ -453,12 +454,21 @@ class StartupController {
         signal: activeRecord?.run.signal ?? null,
         error,
       },
-      runningIds: running.map((preset) => preset.id),
+      runningIds: running.map((view) => view.id),
       output: activeRecord?.output ?? '',
       outputSeq: activeRecord?.seq ?? 0,
       outputTruncated: activeRecord?.truncated ?? false,
       updatedAt: this.updatedAt,
     }
+  }
+
+  /** Snapshot without resending unchanged active output. */
+  state(payload) {
+    const view = this.snapshot()
+    const sameOutput = Number.isSafeInteger(payload?.outputSeq)
+      && payload.outputSeq === view.outputSeq
+      && payload?.activeId === view.activeId
+    return sameOutput ? { ...view, output: null, outputOmitted: true } : view
   }
 
   /** Append process output to one preset's ring buffer. */
@@ -680,7 +690,8 @@ class StartupController {
   async startEnabled() {
     const enabled = this.data.presets.filter((preset) => preset.enabled === true)
     for (let index = 0; index < enabled.length; index += 1) {
-      await this.startPreset(enabled[index].id)
+      const preset = enabled[index]
+      if (this.processes.get(preset.id)?.handle == null) await this.startPreset(preset.id)
       if (index < enabled.length - 1) {
         await new Promise((resolveDelay) => setTimeout(resolveDelay, START_INTERVAL_MS))
       }
@@ -752,19 +763,16 @@ class StartupController {
     return this.snapshot()
   }
 
-  /** Select a preset for display and ensure it is running. */
+  /** Select a preset for display and start it only when it is enabled. */
   async select(payload) {
     const id = text(payload?.id)
     if (id === '') throw httpError(400, 'Preset id is required')
     const preset = this.data.presets.find((candidate) => candidate.id === id)
     if (preset === undefined) throw httpError(404, 'Preset not found')
-    if (preset.enabled !== true) {
-      preset.enabled = true
-      await this.commit({ version: 1, activeId: id, presets: this.data.presets })
-    } else if (this.data.activeId !== id) {
+    if (this.data.activeId !== id) {
       await this.commit({ version: 1, activeId: id, presets: this.data.presets })
     }
-    if (this.processes.get(id)?.handle == null) await this.startPreset(id)
+    if (preset.enabled === true && this.processes.get(id)?.handle == null) await this.startPreset(id)
     return this.snapshot()
   }
 
@@ -774,8 +782,10 @@ class StartupController {
     const enabled = payload?.enabled === true
     const preset = this.data.presets.find((candidate) => candidate.id === id)
     if (preset === undefined) throw httpError(404, 'Preset not found')
-    preset.enabled = enabled
-    await this.commit({ version: 1, activeId: this.data.activeId, presets: this.data.presets })
+    const presets = this.data.presets.map((candidate) => {
+      return candidate.id === id ? { ...candidate, enabled } : candidate
+    })
+    await this.commit({ version: 1, activeId: this.data.activeId, presets })
     if (enabled) await this.startPreset(id)
     else await this.stopPreset(id)
     return this.snapshot()
@@ -840,7 +850,7 @@ export async function apply(ctx, config = {}) {
   ctx.effect(() => () => controller.dispose(), `${SCOPE}.process`)
 
   const api = {
-    state: () => controller.snapshot(),
+    state: (payload) => controller.state(payload),
     save: (payload) => controller.save(payload),
     remove: (payload) => controller.remove(payload),
     select: (payload) => controller.select(payload),

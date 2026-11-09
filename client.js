@@ -877,6 +877,21 @@ window.__ModuleLoader__.load({
         }
       })
       const outputRef = React.useRef(null)
+      const snapshotRef = React.useRef(null)
+      const followOutputRef = React.useRef(true)
+      const previousOutputRef = React.useRef({ seq: 0, active: null })
+      const updateSnapshot = (next) => {
+        if (next === undefined) return
+        setSnapshot((current) => {
+          const merged = next?.outputOmitted === true
+            ? { ...next, output: current?.activeId === next.activeId ? current?.output ?? '' : '' }
+            : next
+          snapshotRef.current = merged
+          return current?.updatedAt === merged?.updatedAt && current?.outputSeq === merged?.outputSeq
+            ? current
+            : merged
+        })
+      }
 
       React.useEffect(() => {
         if (typeof props.subscribeLocale !== 'function') return undefined
@@ -910,20 +925,16 @@ window.__ModuleLoader__.load({
         }
         const load = async () => {
           if (!alive || loading) return
-          if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
-            schedule(10000)
-            return
-          }
+          if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
           loading = true
           let next
           try {
-            next = await call('state')
+            const current = snapshotRef.current
+            next = await call('state', current === null
+              ? {}
+              : { outputSeq: current.outputSeq, activeId: current.activeId })
             if (!alive) return
-            setSnapshot((current) => (
-              current?.updatedAt === next?.updatedAt && current?.outputSeq === next?.outputSeq
-                ? current
-                : next
-            ))
+            updateSnapshot(next)
             setPollError('')
           } catch (error) {
             if (alive) {
@@ -934,7 +945,7 @@ window.__ModuleLoader__.load({
           } finally {
             loading = false
             if (alive) {
-              const running = next?.presets?.some((preset) => preset.running === true) === true
+              const running = snapshotRef.current?.presets?.some((preset) => preset.running === true) === true
               schedule(running ? 1000 : 5000)
             }
           }
@@ -956,10 +967,28 @@ window.__ModuleLoader__.load({
         }
       }, [t])
 
+      const editorOpen = draft !== null
+      React.useEffect(() => {
+        if (!editorOpen) return undefined
+        const onKeyDown = (event) => {
+          if (event.key === 'Escape') setDraft(null)
+        }
+        window.addEventListener('keydown', onKeyDown)
+        return () => window.removeEventListener('keydown', onKeyDown)
+      }, [editorOpen])
+
       React.useEffect(() => {
         const node = outputRef.current
-        if (node !== null) node.scrollTop = node.scrollHeight
-      }, [snapshot?.outputSeq])
+        if (node === null) return
+        const seq = snapshot?.outputSeq ?? 0
+        const active = snapshot?.activeId ?? null
+        const previous = previousOutputRef.current
+        if (active !== previous.active || seq < previous.seq || (snapshot?.output ?? '') === '') {
+          followOutputRef.current = true
+        }
+        previousOutputRef.current = { seq, active }
+        if (followOutputRef.current) node.scrollTop = node.scrollHeight
+      }, [snapshot?.outputSeq, snapshot?.activeId])
 
       const runAction = async (name, operation) => {
         if (busy !== '') return
@@ -967,7 +996,7 @@ window.__ModuleLoader__.load({
         setActionError('')
         try {
           const next = await operation()
-          if (next !== undefined) setSnapshot(next)
+          if (next !== undefined) updateSnapshot(next)
         } catch (error) {
           setActionError(format(t('error.action'), {
             message: error instanceof Error ? error.message : String(error),
@@ -1227,11 +1256,19 @@ window.__ModuleLoader__.load({
             snapshot?.run?.error
               ? h('div', { key: 'run-error', style: S.errorLine }, snapshot.run.error)
               : null,
-            h('pre', { key: 'pre', ref: outputRef, style: S.output },
-              outputSegments.map((segment, index) => h('span', {
-                key: index,
-                style: segment.style,
-              }, segment.text))),
+            h('pre', {
+              key: 'pre',
+              ref: outputRef,
+              style: S.output,
+              onScroll: (event) => {
+                const node = event.currentTarget
+                followOutputRef.current = node.scrollHeight - node.scrollTop - node.clientHeight < 24
+              },
+            },
+            outputSegments.map((segment, index) => h('span', {
+              key: index,
+              style: segment.style,
+            }, segment.text))),
             snapshot?.outputTruncated === true
               ? h('div', { key: 'truncated', style: S.note }, t('output.truncated'))
               : null,
