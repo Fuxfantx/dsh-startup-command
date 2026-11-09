@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Host half of the startup-command bundle.
  *
  * Owns the preset store, the currently running PowerShell process, and its
@@ -31,7 +31,7 @@ const STORE_FILE = 'startup-command-presets.json'
 const MAX_COMMAND = 20000
 const MAX_NAME = 80
 const MAX_CWD = 500
-const MAX_POWERSHELL = 200
+const MAX_INTERPRETER = 200
 const MAX_OUTPUT = 262144
 const MAX_BODY = 1_000_000
 
@@ -195,7 +195,7 @@ function normalizePreset(raw, index, seen) {
   const command = typeof raw.command === 'string' ? raw.command.slice(0, MAX_COMMAND) : ''
   const cwd = text(raw.cwd).slice(0, MAX_CWD)
   const kind = ['powershell', 'cmd', 'bash', 'python'].includes(raw.kind) ? raw.kind : 'powershell'
-  const interpreter = (text(raw.interpreter) || text(raw.powershell)).slice(0, MAX_POWERSHELL)
+  const interpreter = (text(raw.interpreter) || text(raw.powershell)).slice(0, MAX_INTERPRETER)
   const enabled = raw.enabled === true
   const updatedAt = typeof raw.updatedAt === 'number' && Number.isFinite(raw.updatedAt)
     ? raw.updatedAt
@@ -698,7 +698,7 @@ class StartupController {
     const cwd = text(payload?.cwd).slice(0, MAX_CWD)
     if (cwd !== '' && !isAbsolute(cwd)) throw httpError(400, 'Working directory must be an absolute path')
     const kind = ['powershell', 'cmd', 'bash', 'python'].includes(payload?.kind) ? payload.kind : 'powershell'
-    const interpreter = text(payload?.interpreter).slice(0, MAX_POWERSHELL)
+    const interpreter = text(payload?.interpreter).slice(0, MAX_INTERPRETER)
     const existing = id === '' ? undefined : this.data.presets.find((preset) => preset.id === id)
     if (id !== '' && existing === undefined) throw httpError(404, 'Preset not found')
     const preset = {
@@ -904,4 +904,5 @@ export async function apply(ctx, config = {}) {
     logger.error(`[${SCOPE}] cannot start the enabled presets: ${String(error)}`)
   }
 }
+
 
