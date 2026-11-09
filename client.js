@@ -33,6 +33,9 @@ window.__ModuleLoader__.load({
       'presets.edit': '编辑',
       'presets.delete': '删除',
       'presets.confirmDelete': '确认删除',
+      'presets.moveUp': '上移',
+      'presets.moveDown': '下移',
+      'presets.orderHint': '启用项按列表顺序启动，相邻启动间隔 500 ms；上移/下移在下次启动或重启时生效。',
       'presets.enabled': '启用',
       'presets.disabled': '停用',
       'presets.toggleOn': '启用并启动',
@@ -71,11 +74,12 @@ window.__ModuleLoader__.load({
       'busy.select': '切换中…',
       'busy.remove': '删除中…',
       'busy.restart': '重启中…',
+      'busy.move': '调整顺序…',
       'busy.stop': '停止中…',
       'busy.clear': '清空中…',
       'error.load': '读取状态失败：{message}',
       'error.action': '操作失败：{message}',
-      'hint': '逐项开关决定 Preset 是否在 DSH 启动时运行，可同时运行多个 Preset。保存/切换某个 Preset 会先终止它的旧进程树；停止/重启会处理全部受管进程。',
+      'hint': '逐项开关决定 Preset 是否在 DSH 启动时运行；启用项按列表从上到下启动，间隔 500 ms。上移/下移只调整顺序，下次启动或重启生效。',
       'preview.empty': '（未配置指令）',
     }
 
@@ -91,6 +95,9 @@ window.__ModuleLoader__.load({
       'presets.edit': 'Edit',
       'presets.delete': 'Delete',
       'presets.confirmDelete': 'Confirm delete',
+      'presets.moveUp': 'Move up',
+      'presets.moveDown': 'Move down',
+      'presets.orderHint': 'Enabled presets start in list order, 500 ms apart; reordering applies on the next start or restart.',
       'presets.enabled': 'On',
       'presets.disabled': 'Off',
       'presets.toggleOn': 'Enable and start',
@@ -129,11 +136,12 @@ window.__ModuleLoader__.load({
       'busy.select': 'Switching…',
       'busy.remove': 'Deleting…',
       'busy.restart': 'Restarting…',
+      'busy.move': 'Reordering…',
       'busy.stop': 'Stopping…',
       'busy.clear': 'Clearing…',
       'error.load': 'Cannot read state: {message}',
       'error.action': 'Action failed: {message}',
-      'hint': 'Per-preset switches decide what runs at DSH startup; several presets may run together. Saving or switching a preset first terminates its old process tree; Stop/Restart cover every managed process.',
+      'hint': 'Per-preset switches decide what runs at DSH startup; enabled presets start top to bottom, 500 ms apart. Reordering applies on the next start or restart.',
       'preview.empty': '(no command configured)',
     }
 
@@ -674,6 +682,24 @@ window.__ModuleLoader__.load({
         cursor: 'pointer',
         whiteSpace: 'nowrap',
       },
+      orderButton: {
+        appearance: 'none',
+        border: '1px solid var(--dsw-alias-border-l1)',
+        background: 'transparent',
+        color: 'var(--dsw-alias-label-secondary)',
+        borderRadius: '5px',
+        padding: '2px 0',
+        width: '22px',
+        fontSize: '11px',
+        lineHeight: 1.2,
+        cursor: 'pointer',
+      },
+      presetOrderHint: {
+        color: 'var(--dsw-alias-label-secondary)',
+        fontSize: '11px',
+        lineHeight: 1.5,
+        marginTop: '-2px',
+      },
       outputPane: {
         display: 'flex',
         flexDirection: 'column',
@@ -973,6 +999,12 @@ window.__ModuleLoader__.load({
         runAction('toggle', () => call('toggle', { id: preset.id, enabled: preset.enabled !== true }))
       }
 
+      const movePreset = (preset, direction) => {
+        setDraft(null)
+        setConfirmId(null)
+        runAction('move', () => call('move', { id: preset.id, direction }))
+      }
+
       const removePreset = (id) => {
         if (confirmId !== id) {
           setConfirmId(id)
@@ -1049,6 +1081,7 @@ window.__ModuleLoader__.load({
                 onClick: startNew,
               }, `+ ${t('action.new')}`),
             ]),
+            h('div', { key: 'order-hint', style: S.presetOrderHint }, t('presets.orderHint')),
             h('div', { key: 'list', style: S.list }, snapshot === null
               ? null
               : snapshot.presets.length === 0
@@ -1062,7 +1095,7 @@ window.__ModuleLoader__.load({
                     onClick: startNew,
                   }, t('presets.new')),
                 ])
-                : snapshot.presets.map((preset) => {
+                : snapshot.presets.map((preset, index) => {
                   const active = preset.id === activeId
                   const enabled = preset.enabled === true
                   const running = preset.running === true
@@ -1102,6 +1135,24 @@ window.__ModuleLoader__.load({
                       ]),
                     ]),
                     h('div', { key: 'actions', style: S.presetActions }, [
+                      h('button', {
+                        key: 'up',
+                        type: 'button',
+                        style: S.orderButton,
+                        title: t('presets.moveUp'),
+                        'aria-label': t('presets.moveUp'),
+                        disabled: busy !== '' || index === 0,
+                        onClick: () => movePreset(preset, 'up'),
+                      }, '↑'),
+                      h('button', {
+                        key: 'down',
+                        type: 'button',
+                        style: S.orderButton,
+                        title: t('presets.moveDown'),
+                        'aria-label': t('presets.moveDown'),
+                        disabled: busy !== '' || index === snapshot.presets.length - 1,
+                        onClick: () => movePreset(preset, 'down'),
+                      }, '↓'),
                       h('button', {
                         key: 'edit',
                         type: 'button',

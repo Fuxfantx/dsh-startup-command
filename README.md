@@ -19,10 +19,10 @@ DSH 启动时运行启用的 Preset，在左侧边栏打开「启动命令」页
 1. 刷新一次 DSH 页面。
 2. 点击左侧边栏的终端图标「启动命令」。
 3. 点击「新建 Preset」，选择解释器（PowerShell / CMD / Bash / Python），填写名称和指令并保存。
-4. 每个 Preset 行的开关决定它是否启用；多个 Preset 可以同时运行。
-5. 「重启」会停止全部受管进程并按开关重新启动；「停止」停止全部受管进程；保存或切换某个 Preset 会先终止该 Preset 的旧进程树。
+4. 每个 Preset 行的开关决定它是否启用；使用 ↑ / ↓ 调整启用项的执行顺序。
+5. 「重启」会停止全部受管进程，并按列表顺序重新启动启用项，相邻启动间隔 500 ms；「停止」停止全部受管进程；保存或切换某个 Preset 会先终止该 Preset 的旧进程树。
 
-首次升级时，插件会读取旧的 `startup.ps1`，创建一个名为 `Default script` 的 Preset 调用该文件；已有 Preset 不会被覆盖。
+上移 / 下移只调整顺序，不会中断正在运行的进程；新顺序在下次启动或重启时生效。
 
 ### 本地化
 
@@ -49,6 +49,7 @@ Preset 保存在 DSH Profile 目录下的 `startup-command-presets.json`：
 ### 工作方式
 
 - 指令通过 DSH 的 `ctx.subprocess` 启动，Windows 下进入 Job Object，并设置隐藏窗口标志，因此不会弹窗。
+- 启用项按列表顺序启动；一次启动多个 Preset 时，相邻两次启动间隔 500 ms。
 - 停止、重启、保存/切换 Preset、停用插件或退出 DSH 时，会终止对应托管进程范围并等待其退出；超时会重试终止。Windows Job 会连同其下属进程/Job 一起结束。
 - 逐项开关允许多个 Preset 并行运行；页面显示当前选中 Preset 的输出，多个进程启动时会写入名称分隔行。
 - 输出中的 ANSI SGR 颜色（标准 16 色、256 色和 RGB）会渲染为彩色文本，非 SGR 控制序列会被移除。标准 ANSI 颜色使用浅色/深色两套调色板，避免深色模式下出现不可读的黑字。
@@ -89,10 +90,10 @@ Runs enabled presets when DSH starts, opens a **Startup command** page from the 
 1. Refresh the DSH page once.
 2. Click the terminal icon named **Startup command** in the left sidebar.
 3. Click **New preset**, choose an interpreter (PowerShell / CMD / Bash / Python), enter a name and command, and save.
-4. Each preset row has an on/off switch; several presets may run together.
-5. **Restart** stops every managed process and starts the enabled presets again; **Stop** stops every managed process; saving or switching a preset first terminates that preset's old process tree.
+4. Each preset row has an on/off switch; use ↑ / ↓ to set the execution order of enabled presets.
+5. **Restart** stops every managed process and starts enabled presets in list order, 500 ms apart; **Stop** stops every managed process; saving or switching a preset first terminates that preset's old process tree.
 
-On the first upgrade, the plugin reads the legacy `startup.ps1` and creates a `Default script` preset that invokes it. Existing presets are never overwritten.
+Moving a preset only changes the stored order; it does not interrupt running processes. The new order applies on the next start or restart.
 
 ### Localization
 
@@ -119,6 +120,7 @@ Output is kept per preset in Host memory, capped at 256 KiB; the page shows the 
 ### How it works
 
 - The command is launched through DSH's `ctx.subprocess`. On Windows it joins a Job object and uses hidden-window flags, so no console window appears.
+- Enabled presets start in list order; when several start together, launches are 500 ms apart.
 - Stop, restart, save/switch, plugin disable, and DSH exit terminate the managed process ranges and wait for them; timeouts retry termination. On Windows the Job ends its descendant processes/Jobs too.
 - Per-preset switches allow several presets to run together; the page shows the selected preset's output, with a name separator when a process starts.
 - ANSI SGR colors in the output (standard 16-color, 256-color, and RGB) render as styled text; non-SGR control sequences are removed. Standard ANSI colors use separate light/dark palettes so black-on-dark output stays readable.
@@ -146,9 +148,8 @@ The package has no npm dependencies, so installation needs no network access.
 
 ## Files / 文件
 
-- `index.js` — Host: preset store, process lifecycle, output buffer, HTTP API.
+- `index.js` — Host: preset store, ordered process lifecycle, output buffer, HTTP API.
 - `client.js` — left-sidebar entry and main-column page with output viewer and preset editor.
-- `startup.ps1` — legacy script entry used by the initial migration.
 - `cordis.patch.yml` — installs the `startup-command` loader row.
 - `locale/` — plugin inventory titles and descriptions (`zh`, `en`).
 - `icon.svg` — plugin icon.

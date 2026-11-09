@@ -17,12 +17,8 @@ import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { existsSync, statSync } from 'node:fs'
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
-import { dirname, isAbsolute, join, resolve } from 'node:path'
+import { join, resolve } from 'node:path'
 import { StringDecoder } from 'node:string_decoder'
-import { fileURLToPath } from 'node:url'
-
-/** Directory containing this module, used to resolve the legacy script. */
-const PACKAGE_DIR = dirname(fileURLToPath(import.meta.url))
 
 /** Loader row id, log scope, and the browser route prefix. */
 const SCOPE = 'startup-command'
@@ -38,6 +34,9 @@ const MAX_CWD = 500
 const MAX_POWERSHELL = 200
 const MAX_OUTPUT = 262144
 const MAX_BODY = 1_000_000
+
+/** Delay between launching two enabled presets. */
+const START_INTERVAL_MS = 500
 
 /** Default lifecycle timings. */
 const DEFAULT_GRACE_MS = 3000
@@ -176,23 +175,6 @@ async function readPid(path) {
   } catch {
     return 0
   }
-}
-
-/**
- * Resolve a legacy script path for the initial preset.
- * @param setting - configured script path.
- * @param profileDir - current profile directory.
- * @returns the first existing candidate, or the package-relative path.
- */
-function resolveLegacyScript(setting, profileDir) {
-  if (isAbsolute(setting)) return setting
-  const besidePackage = resolve(PACKAGE_DIR, setting)
-  if (existsSync(besidePackage)) return besidePackage
-  if (profileDir !== '') {
-    const inProfile = resolve(profileDir, setting)
-    if (existsSync(inProfile)) return inProfile
-  }
-  return besidePackage
 }
 
 /**
@@ -343,27 +325,21 @@ class StartupController {
     }
   }
 
-  /** Build the first store from the legacy script or configured command. */
+  /** Build the first store from the optional configured command. */
   seed() {
-    const scriptSetting = text(this.config.script) || 'startup.ps1'
-    const scriptPath = resolveLegacyScript(scriptSetting, this.profileDir)
-    let command = text(this.config.command)
-    if (command === '' && existsSync(scriptPath)) {
-      const quoted = scriptPath.replaceAll("'", "''")
-      command = `& '${quoted}'`
-    }
+    const command = text(this.config.command)
     const id = randomUUID()
     return {
       version: 1,
       activeId: id,
       presets: [{
         id,
-        name: command === '' ? 'Default' : 'Default script',
+        name: 'Default',
         command,
         cwd: '',
         kind: 'powershell',
         interpreter: '',
-        enabled: true,
+        enabled: command !== '',
         updatedAt: Date.now(),
       }],
     }
@@ -697,10 +673,14 @@ class StartupController {
     })
   }
 
-  /** Start every enabled preset. */
+  /** Start enabled presets in list order, 500 ms apart. */
   async startEnabled(reason) {
-    for (const preset of this.data.presets) {
-      if (preset.enabled === true) await this.startPreset(preset.id, reason)
+    const enabled = this.data.presets.filter((preset) => preset.enabled === true)
+    for (let index = 0; index < enabled.length; index += 1) {
+      await this.startPreset(enabled[index].id, reason)
+      if (index < enabled.length - 1) {
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, START_INTERVAL_MS))
+      }
     }
   }
 
@@ -798,6 +778,23 @@ class StartupController {
     return this.snapshot()
   }
 
+  /** Move one preset up or down in execution order. */
+  async move(payload) {
+    const id = text(payload?.id)
+    const direction = payload?.direction
+    if (id === '') throw httpError(400, 'Preset id is required')
+    if (direction !== 'up' && direction !== 'down') throw httpError(400, 'Invalid direction')
+    const index = this.data.presets.findIndex((preset) => preset.id === id)
+    if (index === -1) throw httpError(404, 'Preset not found')
+    const target = direction === 'up' ? index - 1 : index + 1
+    if (target < 0 || target >= this.data.presets.length) return this.snapshot()
+    const presets = [...this.data.presets]
+    const [moved] = presets.splice(index, 1)
+    presets.splice(target, 0, moved)
+    await this.commit({ version: 1, activeId: this.data.activeId, presets })
+    return this.snapshot()
+  }
+
   /** Restart every enabled preset after stopping all managed ranges. */
   async restart() {
     await this.stopAll('manual restart')
@@ -845,6 +842,7 @@ export async function apply(ctx, config = {}) {
     remove: (payload) => controller.remove(payload),
     select: (payload) => controller.select(payload),
     toggle: (payload) => controller.toggle(payload),
+    move: (payload) => controller.move(payload),
     restart: () => controller.restart(),
     stop: () => controller.stop(),
     clear: () => controller.clear(),
