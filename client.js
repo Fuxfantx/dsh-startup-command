@@ -21,11 +21,19 @@ window.__ModuleLoader__.load({
     /** Same-origin API path. */
     const API = '/startup-command/api'
 
+    /** Keep in sync with the Host-side limits in lib/constants.js. */
+    const LIMITS = Object.freeze({
+      name: 80,
+      command: 20000,
+      cwd: 500,
+      interpreter: 200,
+    })
+
     const zh = {
       'panel.title': '启动命令',
       'panel.subtitle': '查看启动输出并管理 Preset',
       'output.title': '启动输出',
-      'output.empty': '暂无输出。选择或创建一个 Preset，然后点击重启。',
+      'output.empty': '当前 Preset 暂无输出。',
       'output.truncated': '输出过长，仅显示最近部分。',
       'presets.title': 'Preset',
       'presets.empty': '还没有 Preset。新建一个来开始。',
@@ -35,7 +43,6 @@ window.__ModuleLoader__.load({
       'presets.confirmDelete': '确认删除',
       'presets.moveUp': '上移',
       'presets.moveDown': '下移',
-      'presets.orderHint': '启用项按列表顺序启动，相邻启动间隔 500 ms；上移/下移在下次启动或重启时生效。',
       'presets.enabled': '启用',
       'presets.disabled': '停用',
       'presets.toggleOn': '启用并启动',
@@ -48,6 +55,7 @@ window.__ModuleLoader__.load({
       'run.started': '开始于 {time}',
       'run.ended': '结束于 {time}',
       'run.exit': '退出码 {code}',
+      'run.signal': '信号 {signal}',
       'action.restart': '重启',
       'action.stop': '停止',
       'action.clear': '清空输出',
@@ -70,6 +78,7 @@ window.__ModuleLoader__.load({
       'form.interpreter': '解释器路径（可选）',
       'form.interpreterPlaceholder': '留空则使用对应默认程序',
       'form.nameRequired': '请填写名称',
+      'form.commandRequired': '启用的 Preset 必须填写启动指令',
       'busy.save': '保存中…',
       'busy.select': '切换中…',
       'busy.toggle': '更新中…',
@@ -80,7 +89,7 @@ window.__ModuleLoader__.load({
       'busy.clear': '清空中…',
       'error.load': '读取状态失败：{message}',
       'error.action': '操作失败：{message}',
-      'hint': '逐项开关决定 Preset 是否在 DSH 启动时运行；启用项按列表从上到下启动，间隔 500 ms。上移/下移只调整顺序，下次启动或重启生效。',
+      'hint': '逐项开关会立即启动或停止对应 Preset，并决定 DSH 下次启动时是否运行；启用项按列表从上到下启动，间隔 500 ms。上移/下移只调整顺序，下次启动或重启生效。',
       'preview.empty': '（未配置指令）',
     }
 
@@ -88,7 +97,7 @@ window.__ModuleLoader__.load({
       'panel.title': 'Startup command',
       'panel.subtitle': 'View startup output and manage presets',
       'output.title': 'Startup output',
-      'output.empty': 'No output yet. Select or create a preset, then restart.',
+      'output.empty': 'The selected preset has no output yet.',
       'output.truncated': 'Output is long; only the most recent part is shown.',
       'presets.title': 'Presets',
       'presets.empty': 'No presets yet. Create one to get started.',
@@ -98,7 +107,6 @@ window.__ModuleLoader__.load({
       'presets.confirmDelete': 'Confirm delete',
       'presets.moveUp': 'Move up',
       'presets.moveDown': 'Move down',
-      'presets.orderHint': 'Enabled presets start in list order, 500 ms apart; reordering applies on the next start or restart.',
       'presets.enabled': 'On',
       'presets.disabled': 'Off',
       'presets.toggleOn': 'Enable and start',
@@ -111,6 +119,7 @@ window.__ModuleLoader__.load({
       'run.started': 'Started at {time}',
       'run.ended': 'Ended at {time}',
       'run.exit': 'Exit code {code}',
+      'run.signal': 'Signal {signal}',
       'action.restart': 'Restart',
       'action.stop': 'Stop',
       'action.clear': 'Clear output',
@@ -133,6 +142,7 @@ window.__ModuleLoader__.load({
       'form.interpreter': 'Interpreter path (optional)',
       'form.interpreterPlaceholder': 'Leave empty for the default program',
       'form.nameRequired': 'Name is required',
+      'form.commandRequired': 'An enabled preset requires a start command',
       'busy.save': 'Saving…',
       'busy.select': 'Switching…',
       'busy.toggle': 'Updating…',
@@ -143,9 +153,18 @@ window.__ModuleLoader__.load({
       'busy.clear': 'Clearing…',
       'error.load': 'Cannot read state: {message}',
       'error.action': 'Action failed: {message}',
-      'hint': 'Per-preset switches decide what runs at DSH startup; enabled presets start top to bottom, 500 ms apart. Reordering applies on the next start or restart.',
+      'hint': 'Per-preset switches start or stop a preset immediately and decide what runs at DSH startup; enabled presets start top to bottom, 500 ms apart. Reordering applies on the next start or restart.',
       'preview.empty': '(no command configured)',
     }
+
+    const fallbackDictionary = (() => {
+      try {
+        const language = String(globalThis.document?.documentElement?.lang || globalThis.navigator?.language || 'en')
+        return language.toLowerCase().startsWith('zh') ? zh : en
+      } catch {
+        return en
+      }
+    })()
 
     /**
      * Interpolate a dictionary string.
@@ -177,7 +196,7 @@ window.__ModuleLoader__.load({
      * @param payload - JSON body.
      * @returns the `value` field of a successful response.
      */
-    async function call(method, payload, timeoutMs = 30000) {
+    async function call(method, payload, timeoutMs = 60000) {
       const response = await fetch(`${apiBase()}${API}/${method}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -215,11 +234,16 @@ window.__ModuleLoader__.load({
      * @returns a clipped preview.
      */
     function preview(command) {
-      const line = String(command ?? '')
-        .split(/\r?\n/u)
-        .map((candidate) => candidate.trim())
-        .find((candidate) => candidate !== '') ?? ''
-      return line.length > 130 ? `${line.slice(0, 130)}…` : line
+      const source = String(command ?? '')
+      let start = 0
+      while (start < source.length) {
+        const newline = source.indexOf('\n', start)
+        const end = newline === -1 ? source.length : newline
+        const line = source.slice(start, end).replace(/\r$/u, '').trim()
+        if (line !== '') return line.length > 130 ? `${line.slice(0, 130)}…` : line
+        start = end + 1
+      }
+      return ''
     }
 
     // #region startup-command-ansi
@@ -245,16 +269,17 @@ window.__ModuleLoader__.load({
 
     /**
      * Map an xterm 256-color index to a CSS color.
-     * @param index - palette index.
+     * @param value - palette index.
      * @param palette - active scheme palette.
      * @returns a CSS color.
      */
-    function ansi256(index, palette) {
+    function ansi256(value, palette) {
+      const index = Math.max(0, Math.min(255, Math.trunc(value)))
       if (index < 8) return palette.fg[index]
       if (index < 16) return palette.bright[index - 8]
       if (index >= 232) {
-        const value = 8 + ((index - 232) * 10)
-        return `rgb(${value}, ${value}, ${value})`
+        const level = 8 + ((index - 232) * 10)
+        return `rgb(${level}, ${level}, ${level})`
       }
       const cube = index - 16
       const levels = [0, 95, 135, 175, 215, 255]
@@ -316,7 +341,8 @@ window.__ModuleLoader__.load({
             current[target] = ansi256(codes[index + 2], palette)
             index += 2
           } else if (mode === 2 && [2, 3, 4].every((offset) => Number.isFinite(codes[index + offset]))) {
-            current[target] = `rgb(${codes[index + 2]}, ${codes[index + 3]}, ${codes[index + 4]})`
+            const channel = (offset) => Math.max(0, Math.min(255, Math.trunc(codes[index + offset])))
+            current[target] = `rgb(${channel(2)}, ${channel(3)}, ${channel(4)})`
             index += 4
           } else {
             index += 1
@@ -354,9 +380,10 @@ window.__ModuleLoader__.load({
      */
     function stripAnsiControls(text) {
       return text
-        .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/gu, '')
+        .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/gu, '')
         .replace(/\x1b\[[0-?]*[ -/]*[@-~]/gu, '')
         .replace(/\x1b[@-_]/gu, '')
+        .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/gu, '')
     }
 
     /**
@@ -369,6 +396,10 @@ window.__ModuleLoader__.load({
     function parseAnsi(text, scheme) {
       const palette = ANSI_PALETTES[scheme] ?? ANSI_PALETTES.dark
       const normalized = String(text ?? '').replace(/\r\n?/gu, '\n')
+      if (!normalized.includes('\x1b')) {
+        const clean = stripAnsiControls(normalized)
+        return clean === '' ? [] : [{ text: clean, style: undefined }]
+      }
       const parts = normalized.split(/(\x1b\[[0-9;]*m)/gu)
       let state = ansiState()
       const segments = []
@@ -697,12 +728,6 @@ window.__ModuleLoader__.load({
         lineHeight: 1.2,
         cursor: 'pointer',
       },
-      presetOrderHint: {
-        color: 'var(--dsw-alias-label-secondary)',
-        fontSize: '11px',
-        lineHeight: 1.5,
-        marginTop: '-2px',
-      },
       outputPane: {
         display: 'flex',
         flexDirection: 'column',
@@ -879,17 +904,39 @@ window.__ModuleLoader__.load({
       })
       const outputRef = React.useRef(null)
       const snapshotRef = React.useRef(null)
+      const busyRef = React.useRef(false)
       const followOutputRef = React.useRef(true)
       const previousOutputRef = React.useRef({ seq: 0, active: null })
       const updateSnapshot = (next) => {
-        if (next === undefined) return
-        setSnapshot((current) => {
-          const merged = next?.outputOmitted === true
-            ? { ...next, output: current?.activeId === next.activeId ? current?.output ?? '' : '' }
-            : next
-          snapshotRef.current = merged
-          return current?.updatedAt === merged?.updatedAt && current?.outputSeq === merged?.outputSeq
-            ? current
+        if (next === undefined || next === null) return
+        const current = snapshotRef.current
+        const sameInstance = current !== null && current.instanceId === next.instanceId
+        if (sameInstance &&
+          Number.isFinite(current.updatedAt) &&
+          Number.isFinite(next.updatedAt) &&
+          next.updatedAt < current.updatedAt) {
+          return
+        }
+        let merged = next
+        if (next.outputOmitted === true) {
+          merged = {
+            ...merged,
+            output: current?.activeId === next.activeId ? current?.output ?? '' : '',
+          }
+        }
+        if (next.presetsOmitted === true) {
+          merged = {
+            ...merged,
+            presets: Array.isArray(current?.presets) ? current.presets : [],
+          }
+        }
+        snapshotRef.current = merged
+        setSnapshot((previous) => {
+          return previous?.instanceId === merged.instanceId &&
+            previous?.updatedAt === merged.updatedAt &&
+            previous?.outputSeq === merged.outputSeq &&
+            previous?.presetsSeq === merged.presetsSeq
+            ? previous
             : merged
         })
       }
@@ -933,7 +980,12 @@ window.__ModuleLoader__.load({
             const current = snapshotRef.current
             next = await call('state', current === null
               ? {}
-              : { outputSeq: current.outputSeq, activeId: current.activeId }, 5000)
+              : {
+                  instanceId: current.instanceId,
+                  outputSeq: current.outputSeq,
+                  activeId: current.activeId,
+                  presetsSeq: current.presetsSeq,
+                }, 5000)
             if (!alive) return
             updateSnapshot(next)
             setPollError('')
@@ -972,7 +1024,7 @@ window.__ModuleLoader__.load({
       React.useEffect(() => {
         if (!editorOpen) return undefined
         const onKeyDown = (event) => {
-          if (event.key === 'Escape') setDraft(null)
+          if (event.key === 'Escape' && !busyRef.current) setDraft(null)
         }
         window.addEventListener('keydown', onKeyDown)
         return () => window.removeEventListener('keydown', onKeyDown)
@@ -992,7 +1044,8 @@ window.__ModuleLoader__.load({
       }, [snapshot?.outputSeq, snapshot?.activeId])
 
       const runAction = async (name, operation) => {
-        if (busy !== '') return
+        if (busyRef.current) return
+        busyRef.current = true
         setBusy(name)
         setActionError('')
         try {
@@ -1003,6 +1056,7 @@ window.__ModuleLoader__.load({
             message: error instanceof Error ? error.message : String(error),
           }))
         } finally {
+          busyRef.current = false
           setBusy('')
         }
       }
@@ -1018,9 +1072,9 @@ window.__ModuleLoader__.load({
         setActionError('')
         setDraft({
           id: preset.id,
-          name: preset.name,
-          command: preset.command,
-          cwd: preset.cwd,
+          name: preset.name ?? '',
+          command: preset.command ?? '',
+          cwd: preset.cwd ?? '',
           kind: preset.kind ?? 'powershell',
           interpreter: preset.interpreter ?? '',
           enabled: preset.enabled === true,
@@ -1031,6 +1085,10 @@ window.__ModuleLoader__.load({
         if (draft === null) return
         if (draft.name.trim() === '') {
           setActionError(t('form.nameRequired'))
+          return
+        }
+        if (draft.enabled === true && draft.command.trim() === '') {
+          setActionError(t('form.commandRequired'))
           return
         }
         const payload = {
@@ -1091,6 +1149,9 @@ window.__ModuleLoader__.load({
             : 'var(--dsw-alias-state-idle-primary)'
       const errorText = actionError || pollError
       const activeId = snapshot?.activeId ?? null
+      const presets = snapshot?.presets ?? []
+      const startedAt = formatTime(snapshot?.run?.startedAt)
+      const endedAt = formatTime(snapshot?.run?.endedAt)
       const outputText = snapshot === null ? '…' : (snapshot.output || t('output.empty'))
       const outputSegments = React.useMemo(
         () => parseAnsi(outputText, scheme),
@@ -1143,10 +1204,9 @@ window.__ModuleLoader__.load({
                 onClick: startNew,
               }, `+ ${t('action.new')}`),
             ]),
-            h('div', { key: 'order-hint', style: S.presetOrderHint }, t('presets.orderHint')),
             h('div', { key: 'list', style: S.list }, snapshot === null
               ? null
-              : snapshot.presets.length === 0
+              : presets.length === 0
                 ? h('div', { key: 'empty', style: S.empty }, [
                   h('span', { key: 'text' }, t('presets.empty')),
                   h('button', {
@@ -1157,7 +1217,7 @@ window.__ModuleLoader__.load({
                     onClick: startNew,
                   }, t('presets.new')),
                 ])
-                : snapshot.presets.map((preset, index) => {
+                : presets.map((preset, index) => {
                   const active = preset.id === activeId
                   const enabled = preset.enabled === true
                   const running = preset.running === true
@@ -1192,8 +1252,11 @@ window.__ModuleLoader__.load({
                         h('div', { key: 'name', style: S.presetName }, preset.name),
                         h('div', { key: 'command', style: S.presetCommand },
                           preview(preset.command) || t('preview.empty')),
-                        h('div', { key: 'state', style: running ? S.presetStateOn : S.presetState },
-                          `${t(`form.kind.${preset.kind ?? 'powershell'}`)} · ${t(`status.${preset.run?.status ?? 'idle'}`)}`),
+                        h('div', {
+                          key: 'state',
+                          style: running ? S.presetStateOn : S.presetState,
+                          title: preset.run?.error ?? undefined,
+                        }, `${t(`form.kind.${preset.kind ?? 'powershell'}`)} · ${t(`status.${preset.run?.status ?? 'idle'}`)}`),
                       ]),
                     ]),
                     h('div', { key: 'actions', style: S.presetActions }, [
@@ -1212,7 +1275,7 @@ window.__ModuleLoader__.load({
                         style: S.orderButton,
                         title: t('presets.moveDown'),
                         'aria-label': t('presets.moveDown'),
-                        disabled: busy !== '' || index === snapshot.presets.length - 1,
+                        disabled: busy !== '' || index === presets.length - 1,
                         onClick: () => movePreset(preset, 'down'),
                       }, '↓'),
                       h('button', {
@@ -1243,14 +1306,17 @@ window.__ModuleLoader__.load({
                 ]),
               ]),
               h('div', { key: 'meta', style: S.runMeta }, [
-                snapshot?.run?.startedAt
-                  ? h('span', { key: 'started' }, format(t('run.started'), { time: formatTime(snapshot.run.startedAt) }))
+                snapshot?.run?.startedAt && startedAt
+                  ? h('span', { key: 'started' }, format(t('run.started'), { time: startedAt }))
                   : null,
-                snapshot?.run?.endedAt
-                  ? h('span', { key: 'ended' }, format(t('run.ended'), { time: formatTime(snapshot.run.endedAt) }))
+                snapshot?.run?.endedAt && endedAt
+                  ? h('span', { key: 'ended' }, format(t('run.ended'), { time: endedAt }))
                   : null,
                 snapshot?.run?.exitCode !== null && snapshot?.run?.exitCode !== undefined
                   ? h('span', { key: 'exit' }, format(t('run.exit'), { code: snapshot.run.exitCode }))
+                  : null,
+                snapshot?.run?.signal
+                  ? h('span', { key: 'signal' }, format(t('run.signal'), { signal: snapshot.run.signal }))
                   : null,
               ]),
             ]),
@@ -1276,8 +1342,20 @@ window.__ModuleLoader__.load({
             h('div', { key: 'hint', style: S.hint }, t('hint')),
           ]),
         ]),
-        draft === null ? null : h('div', { key: 'editor-backdrop', style: S.editorBackdrop }, [
-          h('div', { key: 'editor', style: S.editor }, [
+        draft === null ? null : h('div', {
+          key: 'editor-backdrop',
+          style: S.editorBackdrop,
+          onMouseDown: (event) => {
+            if (event.target === event.currentTarget && !busyRef.current) setDraft(null)
+          },
+        }, [
+          h('div', {
+            key: 'editor',
+            style: S.editor,
+            role: 'dialog',
+            'aria-modal': true,
+            'aria-label': draft.id === '' ? t('form.newTitle') : t('form.editTitle'),
+          }, [
             h('div', { key: 'title', style: S.editorTitle },
               draft.id === '' ? t('form.newTitle') : t('form.editTitle')),
             h('div', { key: 'name-field', style: S.field }, [
@@ -1287,6 +1365,9 @@ window.__ModuleLoader__.load({
                 style: S.input,
                 value: draft.name,
                 placeholder: t('form.namePlaceholder'),
+                maxLength: LIMITS.name,
+                autoFocus: true,
+                autoComplete: 'off',
                 onChange: (event) => setDraft({ ...draft, name: event.target.value }),
               }),
             ]),
@@ -1310,6 +1391,7 @@ window.__ModuleLoader__.load({
                 value: draft.command,
                 placeholder: t('form.commandPlaceholder'),
                 spellCheck: false,
+                maxLength: LIMITS.command,
                 onChange: (event) => setDraft({ ...draft, command: event.target.value }),
               }),
             ]),
@@ -1320,6 +1402,9 @@ window.__ModuleLoader__.load({
                 style: S.input,
                 value: draft.cwd,
                 placeholder: t('form.cwdPlaceholder'),
+                maxLength: LIMITS.cwd,
+                autoComplete: 'off',
+                spellCheck: false,
                 onChange: (event) => setDraft({ ...draft, cwd: event.target.value }),
               }),
             ]),
@@ -1330,6 +1415,9 @@ window.__ModuleLoader__.load({
                 style: S.input,
                 value: draft.interpreter ?? '',
                 placeholder: t('form.interpreterPlaceholder'),
+                maxLength: LIMITS.interpreter,
+                autoComplete: 'off',
+                spellCheck: false,
                 onChange: (event) => setDraft({ ...draft, interpreter: event.target.value }),
               }),
             ]),
@@ -1367,28 +1455,52 @@ window.__ModuleLoader__.load({
 
         const t = (key, params) => {
           if (typeof localeBound === 'function') {
-            const translated = localeBound(key, params)
-            if (translated !== undefined && translated !== key) return translated
+            try {
+              const translated = localeBound(key, params)
+              if (translated !== undefined && translated !== key) return translated
+            } catch {
+              // Fall back to the built-in dictionary below.
+            }
           }
-          return format(zh[key] ?? en[key] ?? key, params)
+          return format(fallbackDictionary[key] ?? key, params)
         }
 
         ctx.slots.inject('main', () => ctx.slots.register({
           name: 'main',
           key: PANEL_ID,
+          locale: NS,
           label: () => t('panel.title'),
           order: 20,
           inject: () => ({
             t,
-            subscribeLocale: (listener) => ctx.locale.subscribe(listener),
-            getTheme: () => ctx.theme.getTheme(),
-            subscribeTheme: (listener) => ctx.on('theme/change', listener),
+            subscribeLocale: (listener) => {
+              try {
+                return ctx.locale.subscribe(listener)
+              } catch {
+                return () => {}
+              }
+            },
+            getTheme: () => {
+              try {
+                return ctx.theme.getTheme()
+              } catch {
+                return undefined
+              }
+            },
+            subscribeTheme: (listener) => {
+              try {
+                return ctx.on('theme/change', listener)
+              } catch {
+                return () => {}
+              }
+            },
           }),
         }, StartupPanel))
 
         ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
           name: 'sidebar.panellist',
           id: PANEL_ID,
+          locale: NS,
           label: () => t('panel.title'),
           order: 20,
         }, StartupSidebarIcon))
