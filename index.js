@@ -1,9 +1,9 @@
 /**
  * Host half of the startup-command bundle.
  *
- * Owns the preset store, the currently running PowerShell process, and its
- * bounded output buffer. The browser half talks to this file through the
- * same-origin `/startup-command/api` prefix.
+ * Owns the preset store, managed preset processes, and their bounded output
+ * buffers. The browser half talks to this file through the same-origin
+ * `/startup-command/api` prefix.
  *
  * The command is launched through `ctx.subprocess`, whose local provider owns a
  * Windows Job object (and the platform equivalent elsewhere): the provider
@@ -311,7 +311,7 @@ class StartupController {
 
     /** @type {{ version: number, activeId: string | null, presets: Array<object> }} */
     this.data = { version: 1, activeId: null, presets: [] }
-    /** id -> { handle, generation, run, output, seq, truncated } */
+    /** id -> { handle, generation, run, output, outputBytes, seq, truncated } */
     this.processes = new Map()
     this.updatedAt = Date.now()
   }
