@@ -323,19 +323,22 @@ class StartupController {
       this.data = normalizeStore(JSON.parse(raw))
       return
     } catch (error) {
+      let mayWrite = true
       if (error?.code !== 'ENOENT') {
         this.logger.warn(`[${SCOPE}] cannot read presets: ${String(error)}`)
         try {
           await rename(this.storePath, `${this.storePath}.broken-${Date.now()}`)
         } catch {
-          // Keep the original file if the backup itself fails.
+          mayWrite = false
         }
       }
       this.data = this.seed()
-      try {
-        await this.persist(this.data)
-      } catch (writeError) {
-        this.logger.warn(`[${SCOPE}] cannot create the preset store: ${String(writeError)}`)
+      if (mayWrite) {
+        try {
+          await this.persist(this.data)
+        } catch (writeError) {
+          this.logger.warn(`[${SCOPE}] cannot create the preset store: ${String(writeError)}`)
+        }
       }
     }
   }
@@ -427,7 +430,6 @@ class StartupController {
   /** Snapshot the active output and all per-preset run states. */
   snapshot() {
     const activeId = this.data.activeId
-    const active = activeId === null ? undefined : this.data.presets.find((preset) => preset.id === activeId)
     const activeRecord = activeId === null ? undefined : this.processes.get(activeId)
     const views = this.data.presets.map((preset) => {
       const record = this.processes.get(preset.id)
@@ -457,19 +459,14 @@ class StartupController {
     }
     return {
       activeId,
-      activeName: active?.name ?? '',
       presets: views.map((view) => view.preset),
       run: {
         status,
-        presetId: activeId,
-        presetName: active?.name ?? '',
         startedAt,
         endedAt: activeRecord?.run.endedAt ?? null,
         exitCode: activeRecord?.run.exitCode ?? null,
-        signal: activeRecord?.run.signal ?? null,
         error,
       },
-      runningIds: running.map((view) => view.preset.id),
       output: activeRecord?.output ?? '',
       outputSeq: activeRecord?.seq ?? 0,
       outputTruncated: activeRecord?.truncated ?? false,
