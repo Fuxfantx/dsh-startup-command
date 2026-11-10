@@ -161,8 +161,11 @@ function fallbackShell(kind) {
 
 /** Kill one Windows process tree, including Job/breakaway descendants. */
 function killWindowsTree(pid) {
+  const root = text(process.env.SystemRoot)
+  const absolute = root === '' ? '' : resolve(root, 'System32', 'taskkill.exe')
+  const executable = absolute !== '' && existsSync(absolute) ? absolute : 'taskkill.exe'
   return new Promise((resolveKill) => {
-    execFile('taskkill.exe', ['/T', '/F', '/PID', String(pid)], { windowsHide: true, timeout: 10000 }, () => resolveKill())
+    execFile(executable, ['/T', '/F', '/PID', String(pid)], { windowsHide: true, timeout: 10000 }, () => resolveKill())
   })
 }
 
@@ -237,17 +240,26 @@ function normalizeStore(parsed) {
 function readJson(req) {
   return new Promise((resolveBody, rejectBody) => {
     let size = 0
+    let failed = false
     const chunks = []
+    const fail = (error) => {
+      if (failed) return
+      failed = true
+      rejectBody(error)
+    }
     req.on('data', (chunk) => {
+      if (failed) return
       size += chunk.length
       if (size > MAX_BODY) {
-        rejectBody(httpError(413, 'request body is too large'))
+        chunks.length = 0
+        fail(httpError(413, 'request body is too large'))
         req.destroy()
         return
       }
       chunks.push(chunk)
     })
     req.on('end', () => {
+      if (failed) return
       if (chunks.length === 0) {
         resolveBody({})
         return
@@ -256,11 +268,11 @@ function readJson(req) {
         const parsed = JSON.parse(Buffer.concat(chunks).toString('utf8'))
         resolveBody(parsed !== null && typeof parsed === 'object' ? parsed : {})
       } catch {
-        rejectBody(httpError(400, 'request body is not valid JSON'))
+        fail(httpError(400, 'request body is not valid JSON'))
       }
     })
-    req.on('error', rejectBody)
-    req.on('aborted', () => rejectBody(httpError(400, 'request aborted')))
+    req.on('error', (error) => fail(error))
+    req.on('aborted', () => fail(httpError(400, 'request aborted')))
   })
 }
 
@@ -402,6 +414,7 @@ class StartupController {
         generation: 0,
         run: this.blankRun(preset),
         output: '',
+        outputBytes: 0,
         seq: 0,
         truncated: false,
         pidPath: '',
@@ -419,13 +432,15 @@ class StartupController {
     const views = this.data.presets.map((preset) => {
       const record = this.processes.get(preset.id)
       return {
-        ...preset,
-        running: record?.handle !== null && record?.handle !== undefined,
-        run: { ...(record?.run ?? this.blankRun(preset)) },
+        preset: {
+          ...preset,
+          running: record?.handle !== null && record?.handle !== undefined,
+          run: { ...(record?.run ?? this.blankRun(preset)) },
+        },
         record,
       }
     })
-    const running = views.filter((view) => view.running)
+    const running = views.filter((view) => view.preset.running)
     let status = 'idle'
     let error = null
     let startedAt = null
@@ -443,7 +458,7 @@ class StartupController {
     return {
       activeId,
       activeName: active?.name ?? '',
-      presets: views.map(({ record, ...view }) => view),
+      presets: views.map((view) => view.preset),
       run: {
         status,
         presetId: activeId,
@@ -454,7 +469,7 @@ class StartupController {
         signal: activeRecord?.run.signal ?? null,
         error,
       },
-      runningIds: running.map((view) => view.id),
+      runningIds: running.map((view) => view.preset.id),
       output: activeRecord?.output ?? '',
       outputSeq: activeRecord?.seq ?? 0,
       outputTruncated: activeRecord?.truncated ?? false,
@@ -477,8 +492,13 @@ class StartupController {
     const record = this.processes.get(id)
     if (record === undefined || record.generation !== generation) return
     record.output += value
-    if (record.output.length > MAX_OUTPUT) {
-      record.output = record.output.slice(-MAX_OUTPUT)
+    record.outputBytes += Buffer.byteLength(value, 'utf8')
+    if (record.outputBytes > MAX_OUTPUT) {
+      const buffer = Buffer.from(record.output, 'utf8')
+      let start = Math.max(0, buffer.length - MAX_OUTPUT)
+      while (start < buffer.length && (buffer[start] & 0xc0) === 0x80) start += 1
+      record.output = buffer.subarray(start).toString('utf8')
+      record.outputBytes = Buffer.byteLength(record.output, 'utf8')
       record.truncated = true
     }
     record.seq += 1
@@ -491,6 +511,7 @@ class StartupController {
     const record = id === null ? undefined : this.processes.get(id)
     if (record !== undefined) {
       record.output = ''
+      record.outputBytes = 0
       record.seq += 1
       record.truncated = false
     }
@@ -598,6 +619,7 @@ class StartupController {
     const record = this.recordFor(id, preset)
     record.run = this.blankRun(preset)
     record.output = ''
+    record.outputBytes = 0
     record.seq += 1
     record.truncated = false
     const generation = ++record.generation

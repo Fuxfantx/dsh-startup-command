@@ -177,11 +177,12 @@ window.__ModuleLoader__.load({
      * @param payload - JSON body.
      * @returns the `value` field of a successful response.
      */
-    async function call(method, payload) {
+    async function call(method, payload, timeoutMs = 30000) {
       const response = await fetch(`${apiBase()}${API}/${method}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(payload ?? {}),
+        signal: AbortSignal.timeout(timeoutMs),
       })
       const body = await response.json().catch(() => undefined)
       if (!response.ok || body?.ok !== true) {
@@ -932,7 +933,7 @@ window.__ModuleLoader__.load({
             const current = snapshotRef.current
             next = await call('state', current === null
               ? {}
-              : { outputSeq: current.outputSeq, activeId: current.activeId })
+              : { outputSeq: current.outputSeq, activeId: current.activeId }, 5000)
             if (!alive) return
             updateSnapshot(next)
             setPollError('')
