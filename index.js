@@ -15,41 +15,32 @@
 
 import { StartupController } from './lib/controller.js'
 import { API_PREFIX, SCOPE } from './lib/constants.js'
-import { errorCode, httpError, readJson, sendJson } from './lib/http.js'
+import { httpError, readJson, sendJson } from './lib/http.js'
 
 /** Services that must exist before commands can be launched and served. */
 export const inject = ['subprocess', 'webServer', 'connection']
 
-/** API methods that change state and therefore share one serial queue. */
-const MUTATING = ['save', 'remove', 'select', 'toggle', 'move', 'restart', 'stop', 'clear']
+/** API methods and the controller call each one forwards to. */
+const ROUTES = {
+  state: (controller, payload) => controller.state(payload),
+  save: (controller, payload) => controller.save(payload),
+  remove: (controller, payload) => controller.remove(payload),
+  select: (controller, payload) => controller.select(payload),
+  toggle: (controller, payload) => controller.toggle(payload),
+  move: (controller, payload) => controller.move(payload),
+  restart: (controller) => controller.restart(),
+  stop: (controller) => controller.stop(),
+  clear: (controller) => controller.clear(),
+}
 
 /**
  * Obtain a logger without depending on one Cordis logger shape.
  * @param ctx - plugin context.
- * @returns an object with best-effort info, warn, and error methods.
+ * @returns the scoped logger, the context logger, or the console.
  */
 function loggerFor(ctx) {
-  try {
-    const scoped = ctx.logger?.(SCOPE)
-    if (scoped !== undefined && scoped !== null &&
-      typeof scoped.info === 'function' &&
-      typeof scoped.warn === 'function' &&
-      typeof scoped.error === 'function') {
-      return scoped
-    }
-  } catch {
-    // Fall through to the context logger.
-  }
-  const base = ctx.logger ?? {}
-  const call = (name) => (message) => {
-    const method = base[name]
-    if (typeof method === 'function') method.call(base, message)
-  }
-  return {
-    info: call('info'),
-    warn: call('warn'),
-    error: call('error'),
-  }
+  const logger = typeof ctx.logger === 'function' ? ctx.logger(SCOPE) : ctx.logger
+  return typeof logger?.warn === 'function' ? logger : console
 }
 
 /**
@@ -61,9 +52,7 @@ function loggerFor(ctx) {
 export async function apply(ctx, config = {}) {
   const logger = loggerFor(ctx)
   const controller = new StartupController(ctx, config, logger)
-  await controller.load()
 
-  let closing = false
   let queue = Promise.resolve()
   const enqueue = (operation) => {
     const result = queue.then(operation, operation)
@@ -71,91 +60,58 @@ export async function apply(ctx, config = {}) {
     return result
   }
   const mutate = (operation) => {
-    return closing ? Promise.reject(httpError(503, 'plugin is shutting down')) : enqueue(operation)
+    return controller.closing
+      ? Promise.reject(httpError(503, 'the plugin is shutting down'))
+      : enqueue(operation)
   }
 
-  const api = {
-    state: (payload) => controller.state(payload),
-    save: (payload) => controller.save(payload),
-    remove: (payload) => controller.remove(payload),
-    select: (payload) => controller.select(payload),
-    toggle: (payload) => controller.toggle(payload),
-    move: (payload) => controller.move(payload),
-    restart: () => controller.restart(),
-    stop: () => controller.stop(),
-    clear: () => controller.clear(),
-  }
-  for (const method of MUTATING) {
-    const operation = api[method]
-    api[method] = (payload) => mutate(() => operation(payload))
-  }
-
+  // Registered before the first await: a reinstall can dispose this instance
+  // while the store is still loading, and nothing may start after that.
   ctx.effect(() => () => {
-    closing = true
     controller.beginClose()
     return enqueue(() => controller.dispose())
-  }, `${SCOPE}: process lifecycle`)
+  }, `${SCOPE}: lifecycle`)
+
+  await controller.load()
+  if (controller.closing) return
 
   ctx.effect(() => ctx.webServer.register({
     kind: 'prefix',
     path: API_PREFIX,
     handler: async (req, res) => {
       try {
-        let rejection
-        try {
-          rejection = ctx.connection.requestRejection(req)
-        } catch {
-          rejection = 403
-        }
+        const rejection = ctx.connection.requestRejection(req)
         if (rejection !== undefined) {
-          if (!req.readableEnded) req.resume()
-          sendJson(res, rejection, {
-            ok: false,
-            error: { code: errorCode(rejection), message: rejection === 401 ? 'unauthorized' : 'forbidden' },
-          })
-          return
+          throw httpError(rejection, rejection === 401 ? 'unauthorized' : 'forbidden')
         }
-        if (req.method !== 'POST') {
-          if (!req.readableEnded) req.resume()
-          sendJson(res, 405, {
-            ok: false,
-            error: { code: errorCode(405), message: 'POST only' },
-          }, { allow: 'POST' })
-          return
-        }
-        let pathname
-        try {
-          pathname = new URL(req.url ?? '/', 'http://dsh.internal').pathname
-        } catch {
-          throw httpError(400, 'invalid request URL')
-        }
-        const method = pathname.startsWith(`${API_PREFIX}/`)
-          ? pathname.slice(API_PREFIX.length + 1)
-          : ''
-        if (method === '' || method.includes('/') || !Object.hasOwn(api, method)) {
-          throw httpError(404, `Unknown method "${method}"`)
-        }
+        if (req.method !== 'POST') throw httpError(405, 'POST only', { allow: 'POST' })
+        const path = (req.url ?? '').split('?', 1)[0]
+        const method = path.startsWith(`${API_PREFIX}/`) ? path.slice(API_PREFIX.length + 1) : ''
+        if (!Object.hasOwn(ROUTES, method)) throw httpError(404, `Unknown method "${method}"`)
         const mediaType = String(req.headers?.['content-type'] ?? '').split(';', 1)[0].trim().toLowerCase()
-        if (mediaType !== 'application/json') {
-          req.resume()
-          throw httpError(415, 'content-type must be application/json')
-        }
+        if (mediaType !== 'application/json') throw httpError(415, 'content-type must be application/json')
         const payload = await readJson(req)
-        const value = await api[method](payload)
+        const route = ROUTES[method]
+        // Only `state` is read-only; every other method starts, stops, or
+        // persists, so it shares the serial mutation queue.
+        const value = method === 'state'
+          ? route(controller, payload)
+          : await mutate(() => route(controller, payload))
         sendJson(res, 200, { ok: true, value })
       } catch (error) {
         const status = Number.isInteger(error?.status) && error.status >= 400 && error.status <= 599
           ? error.status
           : 500
-        if (status >= 500) logger.warn(`[${SCOPE}] API ${req.method ?? 'request'} failed: ${String(error)}`)
+        // 503 means a mutation arrived while the plugin is being unloaded; that
+        // is expected and not worth a log line.
+        if (status >= 500 && status !== 503) {
+          logger.warn(`[${SCOPE}] API ${req.method ?? 'request'} failed: ${String(error)}`)
+        }
         if (!req.readableEnded) req.resume()
         sendJson(res, status, {
           ok: false,
-          error: {
-            code: errorCode(status),
-            message: error instanceof Error ? error.message : String(error),
-          },
-        })
+          error: { message: error instanceof Error ? error.message : String(error) },
+        }, error?.headers)
       }
     },
   }), `${SCOPE}: api route`)

@@ -29,6 +29,10 @@ window.__ModuleLoader__.load({
       interpreter: 200,
     })
 
+    /** Request budgets: a state poll must not stall the page, a mutation may wait. */
+    const POLL_TIMEOUT_MS = 15000
+    const ACTION_TIMEOUT_MS = 120000
+
     const zh = {
       'panel.title': '启动命令',
       'panel.subtitle': '查看启动输出并管理 Preset',
@@ -157,13 +161,13 @@ window.__ModuleLoader__.load({
       'preview.empty': '(no command configured)',
     }
 
+    /**
+     * Dictionary used before the Host locale service answers, chosen from the
+     * language the shell already applied to the document.
+     */
     const fallbackDictionary = (() => {
-      try {
-        const language = String(globalThis.document?.documentElement?.lang || globalThis.navigator?.language || 'en')
-        return language.toLowerCase().startsWith('zh') ? zh : en
-      } catch {
-        return en
-      }
+      const language = String(globalThis.document?.documentElement?.lang || globalThis.navigator?.language || 'en')
+      return language.toLowerCase().startsWith('zh') ? zh : en
     })()
 
     /**
@@ -180,23 +184,41 @@ window.__ModuleLoader__.load({
       })
     }
 
+    /** @returns the message of a thrown value. */
+    function describe(error) {
+      return error instanceof Error ? error.message : String(error)
+    }
+
+    /**
+     * Read the active color scheme from the theme service.
+     * @param getTheme - injected theme reader.
+     * @returns `light` or `dark`.
+     */
+    function readScheme(getTheme) {
+      try {
+        return getTheme?.()?.active?.colorScheme === 'light' ? 'light' : 'dark'
+      } catch {
+        return 'dark'
+      }
+    }
+
     /**
      * Build the absolute API base.
      * @returns origin for HTTP pages, otherwise an empty prefix.
      */
     function apiBase() {
       const location = globalThis.location
-      if (location !== undefined && /^https?:$/.test(location.protocol)) return location.origin
-      return ''
+      return location !== undefined && /^https?:$/.test(location.protocol) ? location.origin : ''
     }
 
     /**
      * Call one Host API method.
      * @param method - route tail.
      * @param payload - JSON body.
+     * @param timeoutMs - request budget.
      * @returns the `value` field of a successful response.
      */
-    async function call(method, payload, timeoutMs = 60000) {
+    async function call(method, payload, timeoutMs = ACTION_TIMEOUT_MS) {
       const response = await fetch(`${apiBase()}${API}/${method}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -204,10 +226,8 @@ window.__ModuleLoader__.load({
         signal: AbortSignal.timeout(timeoutMs),
       })
       const body = await response.json().catch(() => undefined)
-      if (!response.ok || body?.ok !== true) {
-        throw new Error(body?.error?.message ?? `HTTP ${response.status}`)
-      }
-      return body.value
+      if (body?.ok === true) return body.value
+      throw new Error(body?.error?.message ?? `HTTP ${response.status}`)
     }
 
     /**
@@ -234,19 +254,13 @@ window.__ModuleLoader__.load({
      * @returns a clipped preview.
      */
     function preview(command) {
-      const source = String(command ?? '')
-      let start = 0
-      while (start < source.length) {
-        const newline = source.indexOf('\n', start)
-        const end = newline === -1 ? source.length : newline
-        const line = source.slice(start, end).replace(/\r$/u, '').trim()
-        if (line !== '') return line.length > 130 ? `${line.slice(0, 130)}…` : line
-        start = end + 1
-      }
-      return ''
+      const line = String(command ?? '')
+        .split(/\r?\n/u)
+        .map((value) => value.trim())
+        .find((value) => value !== '') ?? ''
+      return line.length > 130 ? `${line.slice(0, 130)}…` : line
     }
 
-    // #region startup-command-ansi
     /** ANSI SGR palettes tuned for the two DSH color schemes. */
     const ANSI_PALETTES = {
       dark: {
@@ -418,7 +432,13 @@ window.__ModuleLoader__.load({
       }
       return segments
     }
-    // #endregion startup-command-ansi
+
+    /** Run-state colors; anything else renders as idle. */
+    const STATUS_COLORS = {
+      running: 'var(--dsw-alias-state-success-primary)',
+      failed: 'var(--dsw-alias-state-error-primary)',
+      stopped: 'var(--dsw-alias-state-warn-primary)',
+    }
 
     /** Terminal-prompt glyph used by the sidebar entry and page header. */
     function StartupGlyph({ size = 18 }) {
@@ -531,17 +551,6 @@ window.__ModuleLoader__.load({
         color: 'var(--dsw-alias-label-primary-inverted)',
         borderRadius: '7px',
         padding: '6px 12px',
-        fontSize: '12px',
-        cursor: 'pointer',
-        whiteSpace: 'nowrap',
-      },
-      dangerButton: {
-        appearance: 'none',
-        border: '1px solid var(--dsw-alias-state-error-primary)',
-        background: 'transparent',
-        color: 'var(--dsw-alias-state-error-primary)',
-        borderRadius: '7px',
-        padding: '5px 10px',
         fontSize: '12px',
         cursor: 'pointer',
         whiteSpace: 'nowrap',
@@ -895,41 +904,23 @@ window.__ModuleLoader__.load({
       const [draft, setDraft] = React.useState(null)
       const [confirmId, setConfirmId] = React.useState(null)
       const [, setLocaleTick] = React.useState(0)
-      const [scheme, setScheme] = React.useState(() => {
-        try {
-          return props.getTheme?.()?.active?.colorScheme === 'light' ? 'light' : 'dark'
-        } catch {
-          return 'dark'
-        }
-      })
+      const [scheme, setScheme] = React.useState(() => readScheme(props.getTheme))
       const outputRef = React.useRef(null)
       const snapshotRef = React.useRef(null)
       const busyRef = React.useRef(false)
       const followOutputRef = React.useRef(true)
       const previousOutputRef = React.useRef({ seq: 0, active: null })
+
       const updateSnapshot = (next) => {
         if (next === undefined || next === null) return
         const current = snapshotRef.current
         const sameInstance = current !== null && current.instanceId === next.instanceId
-        if (sameInstance &&
-          Number.isFinite(current.updatedAt) &&
-          Number.isFinite(next.updatedAt) &&
-          next.updatedAt < current.updatedAt) {
-          return
-        }
-        let merged = next
-        if (next.outputOmitted === true) {
-          merged = {
-            ...merged,
-            output: current?.activeId === next.activeId ? current?.output ?? '' : '',
-          }
-        }
-        if (next.presetsOmitted === true) {
-          merged = {
-            ...merged,
-            presets: Array.isArray(current?.presets) ? current.presets : [],
-          }
-        }
+        // A poll that left the Host before a mutation can arrive after it; the
+        // revision it carries is older than what the mutation already applied.
+        if (sameInstance && next.updatedAt < current.updatedAt) return
+        const merged = { ...next }
+        if (next.outputOmitted === true) merged.output = current.output
+        if (next.presetsOmitted === true) merged.presets = current.presets
         snapshotRef.current = merged
         setSnapshot((previous) => {
           return previous?.instanceId === merged.instanceId &&
@@ -948,13 +939,7 @@ window.__ModuleLoader__.load({
 
       React.useEffect(() => {
         if (typeof props.getTheme !== 'function' || typeof props.subscribeTheme !== 'function') return undefined
-        const read = () => {
-          try {
-            setScheme(props.getTheme().active.colorScheme === 'light' ? 'light' : 'dark')
-          } catch {
-            // Keep the last known scheme if the theme service is momentarily unavailable.
-          }
-        }
+        const read = () => setScheme(readScheme(props.getTheme))
         read()
         return props.subscribeTheme(read)
       }, [props.getTheme, props.subscribeTheme])
@@ -963,59 +948,61 @@ window.__ModuleLoader__.load({
         let alive = true
         let loading = false
         let timer = null
+        let failures = 0
+        const stop = () => {
+          if (timer === null) return
+          window.clearTimeout(timer)
+          timer = null
+        }
         const schedule = (delay) => {
           if (!alive) return
-          if (timer !== null) window.clearTimeout(timer)
+          stop()
           timer = window.setTimeout(() => {
             timer = null
             void load()
           }, delay)
         }
         const load = async () => {
-          if (!alive || loading) return
-          if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
+          if (!alive || loading || document.visibilityState === 'hidden') return
           loading = true
-          let next
           try {
             const current = snapshotRef.current
-            next = await call('state', current === null
+            const next = await call('state', current === null
               ? {}
               : {
                   instanceId: current.instanceId,
                   outputSeq: current.outputSeq,
                   activeId: current.activeId,
                   presetsSeq: current.presetsSeq,
-                }, 5000)
+                }, POLL_TIMEOUT_MS)
             if (!alive) return
+            failures = 0
             updateSnapshot(next)
             setPollError('')
           } catch (error) {
-            if (alive) {
-              setPollError(format(t('error.load'), {
-                message: error instanceof Error ? error.message : String(error),
-              }))
-            }
+            if (!alive) return
+            failures += 1
+            setPollError(format(t('error.load'), { message: describe(error) }))
           } finally {
             loading = false
             if (alive) {
               const running = snapshotRef.current?.presets?.some((preset) => preset.running === true) === true
-              schedule(running ? 1000 : 5000)
+              // A congested link is retried with a growing delay instead of a
+              // steady stream of requests that would each time out too.
+              schedule(failures === 0 ? (running ? 1000 : 5000) : Math.min(30000, 2000 * 2 ** (failures - 1)))
             }
           }
         }
         const onVisibility = () => {
           if (document.visibilityState !== 'visible') return
-          if (timer !== null) {
-            window.clearTimeout(timer)
-            timer = null
-          }
+          stop()
           void load()
         }
         document.addEventListener('visibilitychange', onVisibility)
         void load()
         return () => {
           alive = false
-          if (timer !== null) window.clearTimeout(timer)
+          stop()
           document.removeEventListener('visibilitychange', onVisibility)
         }
       }, [t])
@@ -1052,9 +1039,7 @@ window.__ModuleLoader__.load({
           const next = await operation()
           if (next !== undefined) updateSnapshot(next)
         } catch (error) {
-          setActionError(format(t('error.action'), {
-            message: error instanceof Error ? error.message : String(error),
-          }))
+          setActionError(format(t('error.action'), { message: describe(error) }))
         } finally {
           busyRef.current = false
           setBusy('')
@@ -1140,13 +1125,7 @@ window.__ModuleLoader__.load({
       const status = snapshot?.run?.status ?? 'idle'
       const busyLabel = busy === '' ? '' : t(`busy.${busy}`)
       const statusLabel = busyLabel || t(`status.${status}`)
-      const statusColor = status === 'running'
-        ? 'var(--dsw-alias-state-success-primary)'
-        : status === 'failed'
-          ? 'var(--dsw-alias-state-error-primary)'
-          : status === 'stopped'
-            ? 'var(--dsw-alias-state-warn-primary)'
-            : 'var(--dsw-alias-state-idle-primary)'
+      const statusColor = STATUS_COLORS[status] ?? 'var(--dsw-alias-state-idle-primary)'
       const errorText = actionError || pollError
       const activeId = snapshot?.activeId ?? null
       const presets = snapshot?.presets ?? []
@@ -1445,21 +1424,23 @@ window.__ModuleLoader__.load({
     return {
       inject: ['slots', 'locale', 'theme'],
       apply(ctx) {
-        let localeBound
+        // A live namespace keeps the dictionaries registered by the previous
+        // instance during a reinstall; the first registration wins.
+        let bound
         try {
           ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'startup-command: locale')
-          localeBound = ctx.locale.bind(NS)
+          bound = ctx.locale.bind(NS)
         } catch {
-          // Fall back to the built-in dictionary when the locale service is unavailable.
+          // Fall back to the bundled dictionary below.
         }
 
         const t = (key, params) => {
-          if (typeof localeBound === 'function') {
+          if (typeof bound === 'function') {
             try {
-              const translated = localeBound(key, params)
-              if (translated !== undefined && translated !== key) return translated
+              const translated = bound(key, params)
+              if (translated !== key) return translated
             } catch {
-              // Fall back to the built-in dictionary below.
+              // Fall back to the bundled dictionary below.
             }
           }
           return format(fallbackDictionary[key] ?? key, params)
@@ -1473,27 +1454,9 @@ window.__ModuleLoader__.load({
           order: 20,
           inject: () => ({
             t,
-            subscribeLocale: (listener) => {
-              try {
-                return ctx.locale.subscribe(listener)
-              } catch {
-                return () => {}
-              }
-            },
-            getTheme: () => {
-              try {
-                return ctx.theme.getTheme()
-              } catch {
-                return undefined
-              }
-            },
-            subscribeTheme: (listener) => {
-              try {
-                return ctx.on('theme/change', listener)
-              } catch {
-                return () => {}
-              }
-            },
+            subscribeLocale: (listener) => ctx.locale.subscribe(listener),
+            getTheme: () => ctx.theme.getTheme(),
+            subscribeTheme: (listener) => ctx.on('theme/change', listener),
           }),
         }, StartupPanel))
 

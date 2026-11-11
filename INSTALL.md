@@ -1,13 +1,13 @@
 # DSH Startup command — Install / 安装
 
-Version / 版本: **1.7.0**
+Version / 版本: **1.8.0**
 
 ## Offline / 离线安装
 
-1. Extract the zip and keep the `dsh-startup-command` directory.
-   解压 zip，保留 `dsh-startup-command` 目录。
-2. In DSH, open Plugin Manager → install from the local directory (or ask the agent to call `plugin_manager` `install_bundle` with its absolute path).
-   在 DSH 的 Plugin Manager 中从本地目录安装，或让 Agent 用 `install_bundle` 指向该绝对路径。
+1. Extract the package and keep the `dsh-startup-command` directory.
+   解压安装包，保留 `dsh-startup-command` 目录。
+2. In DSH, open Plugin Manager, choose to install from a local directory, and select that directory.
+   在 DSH 中打开 Plugin Manager，选择从本地目录安装，并选中该目录。
 3. Refresh the DSH page.
    刷新 DSH 页面。
 

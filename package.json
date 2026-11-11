@@ -1,12 +1,9 @@
 {
   "name": "dsh-startup-command",
-  "version": "1.7.0",
-  "description": "Runs enabled PowerShell, CMD, Bash and Python presets in user-defined order when DSH starts, spaces launches by 500 ms, and provides live output and preset management from a left-sidebar page, terminating each managed process tree on stop, restart, disable, or exit.",
+  "version": "1.8.0",
+  "description": "Runs enabled PowerShell, CMD, Bash and Python presets in user-defined order when DSH starts, shows live output and preset management from a left-sidebar page, and ends each managed process tree on stop, restart, disable, delete, or exit.",
   "type": "module",
   "main": "index.js",
-  "scripts": {
-    "test": "node --test"
-  },
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
@@ -21,6 +18,7 @@
     "locale/*.json",
     "icon.svg",
     "README.md",
+    "INSTALL.md",
     "LICENSE"
   ],
   "engines": {
