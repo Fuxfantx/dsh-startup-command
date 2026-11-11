@@ -45,7 +45,7 @@
 
 ### 安装
 
-从 Release 下载离线包，解压后通过 DSH 的 Plugin Manager 安装，然后刷新页面。详见 [INSTALL.md](INSTALL.md)。
+在 DSH 中执行 `dsh plugin --profile <profile> add github:Fuxfantx/dsh-startup-command`，然后刷新页面；也可以从 Release 下载离线包，解压后通过 DSH 的 Plugin Manager 安装。详见 [INSTALL.md](INSTALL.md)。
 
 ---
 
@@ -90,7 +90,7 @@ Selecting a preset only switches the view. An enabled preset starts if it is not
 
 ### Install
 
-Download the offline package from Releases, extract it, install it through the DSH Plugin Manager, then refresh the page. See [INSTALL.md](INSTALL.md).
+Run `dsh plugin --profile <profile> add github:Fuxfantx/dsh-startup-command` in DSH and refresh the page, or download the offline package from Releases and install it through the DSH Plugin Manager. See [INSTALL.md](INSTALL.md).
 
 ---
 

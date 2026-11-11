@@ -13,3 +13,11 @@ Version / 版本: **1.8.0**
 
 The package has no npm dependencies and installs without network access.
 本包没有 npm 依赖，安装无需联网。
+
+## From GitHub / 从 GitHub 安装
+
+```sh
+dsh plugin --profile <profile> add github:Fuxfantx/dsh-startup-command
+```
+
+Then refresh the DSH page. 然后刷新 DSH 页面。
