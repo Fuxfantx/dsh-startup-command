@@ -1112,9 +1112,12 @@ window.__ModuleLoader__.load({
         // revision it carries is older than what the mutation already applied.
         if (sameInstance && next.updatedAt < current.updatedAt) return
         const merged = { ...next }
-        if (next.outputOmitted === true) {
+        const epochChanged = current !== null
+          && next.outputEpoch !== undefined
+          && next.outputEpoch !== current.outputEpoch
+        if (next.outputOmitted === true && !epochChanged) {
           merged.output = current?.output ?? ''
-        } else if (next.outputReset === true || next.outputOffset === undefined) {
+        } else if (next.outputReset === true || next.outputOffset === undefined || epochChanged) {
           // A full snapshot, or a Host built before offset-based output.
           merged.output = typeof next.output === 'string' ? next.output : ''
         } else if (typeof next.output === 'string') {
@@ -1182,6 +1185,7 @@ window.__ModuleLoader__.load({
                   instanceId: current.instanceId,
                   outputSeq: current.outputSeq,
                   outputOffset: current.outputOffset,
+                  outputEpoch: current.outputEpoch,
                   activeId: current.activeId,
                   presetsSeq: current.presetsSeq,
                 }, POLL_TIMEOUT_MS, abort.signal)
