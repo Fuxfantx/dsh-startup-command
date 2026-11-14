@@ -14,7 +14,7 @@ window.__ModuleLoader__.load({
     const React = require('react')
     const h = React.createElement
 
-    /** Locale namespace and the panel id shared by the sidebar row and main page. */
+    /** Locale namespace prefix and the panel id shared by the sidebar row and main page. */
     const NS = 'startupCommand'
     const PANEL_ID = 'startup-command'
 
@@ -79,8 +79,8 @@ window.__ModuleLoader__.load({
       'form.kind.python': 'Python',
       'form.cwd': '工作目录（可选）',
       'form.cwdPlaceholder': '留空则使用 DSH Profile 目录；必须是绝对路径',
-      'form.interpreter': '解释器路径（可选）',
-      'form.interpreterPlaceholder': '留空则使用对应默认程序',
+      'form.interpreter': '解释器路径或目录（可选）',
+      'form.interpreterPlaceholder': '留空则自动选择：PowerShell 优先 7，Python 优先 DSH 内置',
       'form.nameRequired': '请填写名称',
       'form.commandRequired': '启用的 Preset 必须填写启动指令',
       'busy.save': '保存中…',
@@ -93,7 +93,7 @@ window.__ModuleLoader__.load({
       'busy.clear': '清空中…',
       'error.load': '读取状态失败：{message}',
       'error.action': '操作失败：{message}',
-      'hint': '逐项开关会立即启动或停止对应 Preset，并决定 DSH 下次启动时是否运行；启用项按列表从上到下启动，间隔 500 ms。上移/下移只调整顺序，下次启动或重启生效。',
+      'hint': '逐项开关会立即启动或停止对应 Preset，并决定 DSH 下次启动时是否运行；启用项按列表从上到下启动。上移/下移只调整顺序，下次启动或重启生效。',
       'preview.empty': '（未配置指令）',
     }
 
@@ -143,8 +143,8 @@ window.__ModuleLoader__.load({
       'form.kind.python': 'Python',
       'form.cwd': 'Working directory (optional)',
       'form.cwdPlaceholder': 'Leave empty for the DSH profile directory; must be absolute',
-      'form.interpreter': 'Interpreter path (optional)',
-      'form.interpreterPlaceholder': 'Leave empty for the default program',
+      'form.interpreter': 'Interpreter path or directory (optional)',
+      'form.interpreterPlaceholder': 'Leave empty to auto-pick: pwsh 7 first, DSH Python first',
       'form.nameRequired': 'Name is required',
       'form.commandRequired': 'An enabled preset requires a start command',
       'busy.save': 'Saving…',
@@ -157,7 +157,7 @@ window.__ModuleLoader__.load({
       'busy.clear': 'Clearing…',
       'error.load': 'Cannot read state: {message}',
       'error.action': 'Action failed: {message}',
-      'hint': 'Per-preset switches start or stop a preset immediately and decide what runs at DSH startup; enabled presets start top to bottom, 500 ms apart. Reordering applies on the next start or restart.',
+      'hint': 'Per-preset switches start or stop a preset immediately and decide what runs at DSH startup; enabled presets start top to bottom. Reordering applies on the next start or restart.',
       'preview.empty': '(no command configured)',
     }
 
@@ -177,10 +177,8 @@ window.__ModuleLoader__.load({
      * @returns the resolved text.
      */
     function format(template, params) {
-      return String(template).replace(/\{(\w+)\}/g, (match, key) => {
-        return params !== undefined && Object.prototype.hasOwnProperty.call(params, key)
-          ? String(params[key])
-          : match
+      return String(template).replace(/\{(\w+)\}/gu, (match, key) => {
+        return params !== undefined && Object.hasOwn(params, key) ? String(params[key]) : match
       })
     }
 
@@ -208,7 +206,7 @@ window.__ModuleLoader__.load({
      */
     function apiBase() {
       const location = globalThis.location
-      return location !== undefined && /^https?:$/.test(location.protocol) ? location.origin : ''
+      return location !== undefined && /^https?:$/u.test(location.protocol) ? location.origin : ''
     }
 
     /**
@@ -216,18 +214,39 @@ window.__ModuleLoader__.load({
      * @param method - route tail.
      * @param payload - JSON body.
      * @param timeoutMs - request budget.
+     * @param signal - optional caller cancellation.
      * @returns the `value` field of a successful response.
      */
-    async function call(method, payload, timeoutMs = ACTION_TIMEOUT_MS) {
-      const response = await fetch(`${apiBase()}${API}/${method}`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(payload ?? {}),
-        signal: AbortSignal.timeout(timeoutMs),
-      })
-      const body = await response.json().catch(() => undefined)
-      if (body?.ok === true) return body.value
-      throw new Error(body?.error?.message ?? `HTTP ${response.status}`)
+    async function call(method, payload, timeoutMs = ACTION_TIMEOUT_MS, signal) {
+      const controller = new AbortController()
+      let timedOut = false
+      const timer = setTimeout(() => {
+        timedOut = true
+        controller.abort()
+      }, timeoutMs)
+      const abort = () => controller.abort()
+      if (signal !== undefined) {
+        if (signal.aborted) controller.abort()
+        else signal.addEventListener('abort', abort, { once: true })
+      }
+      try {
+        const response = await fetch(`${apiBase()}${API}/${method}`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(payload ?? {}),
+          credentials: 'same-origin',
+          signal: controller.signal,
+        })
+        const body = await response.json().catch(() => undefined)
+        if (body?.ok === true) return body.value
+        throw new Error(body?.error?.message ?? `HTTP ${response.status}`)
+      } catch (error) {
+        if (timedOut) throw new Error('request timed out')
+        throw error
+      } finally {
+        clearTimeout(timer)
+        signal?.removeEventListener('abort', abort)
+      }
     }
 
     /**
@@ -237,15 +256,11 @@ window.__ModuleLoader__.load({
      */
     function formatTime(value) {
       if (typeof value !== 'number' || !Number.isFinite(value)) return ''
-      try {
-        return new Date(value).toLocaleTimeString([], {
-          hour: '2-digit',
-          minute: '2-digit',
-          second: '2-digit',
-        })
-      } catch {
-        return ''
-      }
+      return new Date(value).toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+      })
     }
 
     /**
@@ -273,10 +288,7 @@ window.__ModuleLoader__.load({
       },
     }
 
-    /**
-     * Build a fresh SGR state.
-     * @returns the default style state.
-     */
+    /** @returns a fresh SGR state. */
     function ansiState() {
       return { fg: null, bg: null, bold: false, dim: false, italic: false, underline: false, inverse: false }
     }
@@ -891,6 +903,187 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * One preset row in the left list.
+     * @param props - preset, position, and callbacks.
+     * @returns the row.
+     */
+    function PresetRow(props) {
+      const { preset, last, active, busy, confirming, t } = props
+      const enabled = preset.enabled === true
+      const running = preset.running === true
+      const locked = busy !== ''
+      return h('div', { style: active ? S.presetActive : S.preset }, [
+        h('button', {
+          key: 'toggle',
+          type: 'button',
+          role: 'switch',
+          'aria-checked': enabled,
+          title: enabled ? t('presets.toggleOff') : t('presets.toggleOn'),
+          style: enabled ? S.presetSwitchOn : S.presetSwitch,
+          disabled: locked,
+          onClick: props.onToggle,
+        }, enabled ? t('presets.enabled') : t('presets.disabled')),
+        h('div', {
+          key: 'main',
+          style: S.presetMain,
+          role: 'button',
+          tabIndex: 0,
+          onClick: props.onSelect,
+          onKeyDown: (event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault()
+              props.onSelect()
+            }
+          },
+        }, [
+          h('div', { key: 'text', style: S.presetText }, [
+            h('div', { key: 'name', style: S.presetName }, preset.name),
+            h('div', { key: 'command', style: S.presetCommand },
+              preview(preset.command) || t('preview.empty')),
+            h('div', {
+              key: 'state',
+              style: running ? S.presetStateOn : S.presetState,
+              title: preset.run?.error ?? undefined,
+            }, `${t(`form.kind.${preset.kind ?? 'powershell'}`)} · ${t(`status.${preset.run?.status ?? 'idle'}`)}`),
+          ]),
+        ]),
+        h('div', { key: 'actions', style: S.presetActions }, [
+          h('button', {
+            key: 'up',
+            type: 'button',
+            style: S.orderButton,
+            title: t('presets.moveUp'),
+            'aria-label': t('presets.moveUp'),
+            disabled: locked || props.index === 0,
+            onClick: () => props.onMove('up'),
+          }, '↑'),
+          h('button', {
+            key: 'down',
+            type: 'button',
+            style: S.orderButton,
+            title: t('presets.moveDown'),
+            'aria-label': t('presets.moveDown'),
+            disabled: locked || last,
+            onClick: () => props.onMove('down'),
+          }, '↓'),
+          h('button', {
+            key: 'edit',
+            type: 'button',
+            style: S.smallButton,
+            disabled: locked,
+            onClick: props.onEdit,
+          }, t('presets.edit')),
+          h('button', {
+            key: 'delete',
+            type: 'button',
+            style: confirming ? S.smallDanger : S.smallButton,
+            disabled: locked,
+            onClick: props.onRemove,
+          }, confirming ? t('presets.confirmDelete') : t('presets.delete')),
+        ]),
+      ])
+    }
+
+    /**
+     * Preset editor dialog.
+     * @param props - draft, busy label, and callbacks.
+     * @returns the dialog.
+     */
+    function PresetEditor(props) {
+      const { draft, busy, error, t, setDraft } = props
+      const locked = busy !== ''
+      const close = () => {
+        if (!locked) setDraft(null)
+      }
+      const field = (key, label, input) => h('div', { key, style: S.field }, [
+        h('label', { key: 'label', style: S.label }, label),
+        input,
+      ])
+      return h('div', {
+        style: S.editorBackdrop,
+        onMouseDown: (event) => {
+          if (event.target === event.currentTarget) close()
+        },
+      }, [
+        h('div', {
+          key: 'editor',
+          style: S.editor,
+          role: 'dialog',
+          'aria-modal': true,
+          'aria-label': draft.id === '' ? t('form.newTitle') : t('form.editTitle'),
+        }, [
+          h('div', { key: 'title', style: S.editorTitle },
+            draft.id === '' ? t('form.newTitle') : t('form.editTitle')),
+          field('name-field', t('form.name'), h('input', {
+            key: 'input',
+            style: S.input,
+            value: draft.name,
+            placeholder: t('form.namePlaceholder'),
+            maxLength: LIMITS.name,
+            autoFocus: true,
+            autoComplete: 'off',
+            onChange: (event) => setDraft({ ...draft, name: event.target.value }),
+          })),
+          field('kind-field', t('form.kind'), h('select', {
+            key: 'select',
+            style: S.input,
+            value: draft.kind ?? 'powershell',
+            onChange: (event) => setDraft({ ...draft, kind: event.target.value }),
+          }, ['powershell', 'cmd', 'bash', 'python'].map((kind) => h('option', {
+            key: kind,
+            value: kind,
+          }, t(`form.kind.${kind}`))))),
+          field('command-field', t('form.command'), h('textarea', {
+            key: 'textarea',
+            style: S.textarea,
+            value: draft.command,
+            placeholder: t('form.commandPlaceholder'),
+            spellCheck: false,
+            maxLength: LIMITS.command,
+            onChange: (event) => setDraft({ ...draft, command: event.target.value }),
+          })),
+          field('cwd-field', t('form.cwd'), h('input', {
+            key: 'input',
+            style: S.input,
+            value: draft.cwd,
+            placeholder: t('form.cwdPlaceholder'),
+            maxLength: LIMITS.cwd,
+            autoComplete: 'off',
+            spellCheck: false,
+            onChange: (event) => setDraft({ ...draft, cwd: event.target.value }),
+          })),
+          field('interpreter-field', t('form.interpreter'), h('input', {
+            key: 'input',
+            style: S.input,
+            value: draft.interpreter ?? '',
+            placeholder: t('form.interpreterPlaceholder'),
+            maxLength: LIMITS.interpreter,
+            autoComplete: 'off',
+            spellCheck: false,
+            onChange: (event) => setDraft({ ...draft, interpreter: event.target.value }),
+          })),
+          error === '' ? null : h('div', { key: 'error', style: S.errorLine }, error),
+          h('div', { key: 'actions', style: S.editorActions }, [
+            h('button', {
+              key: 'cancel',
+              type: 'button',
+              style: S.button,
+              disabled: locked,
+              onClick: close,
+            }, t('action.cancel')),
+            h('button', {
+              key: 'save',
+              type: 'button',
+              style: S.primaryButton,
+              disabled: locked,
+              onClick: props.onSave,
+            }, busy === 'save' ? t('busy.save') : t('action.save')),
+          ]),
+        ]),
+      ])
+    }
+
+    /**
      * The main-column panel.
      * @param props - slot props plus the injected translate function.
      * @returns the page.
@@ -919,8 +1112,17 @@ window.__ModuleLoader__.load({
         // revision it carries is older than what the mutation already applied.
         if (sameInstance && next.updatedAt < current.updatedAt) return
         const merged = { ...next }
-        if (next.outputOmitted === true) merged.output = current.output
-        if (next.presetsOmitted === true) merged.presets = current.presets
+        if (next.outputOmitted === true) {
+          merged.output = current?.output ?? ''
+        } else if (next.outputReset === true || next.outputOffset === undefined) {
+          // A full snapshot, or a Host built before offset-based output.
+          merged.output = typeof next.output === 'string' ? next.output : ''
+        } else if (typeof next.output === 'string') {
+          merged.output = (current?.output ?? '') + next.output
+        } else {
+          merged.output = current?.output ?? ''
+        }
+        if (next.presetsOmitted === true) merged.presets = current?.presets
         snapshotRef.current = merged
         setSnapshot((previous) => {
           return previous?.instanceId === merged.instanceId &&
@@ -949,6 +1151,7 @@ window.__ModuleLoader__.load({
         let loading = false
         let timer = null
         let failures = 0
+        const abort = new AbortController()
         const stop = () => {
           if (timer === null) return
           window.clearTimeout(timer)
@@ -957,13 +1160,19 @@ window.__ModuleLoader__.load({
         const schedule = (delay) => {
           if (!alive) return
           stop()
+          // A little jitter keeps multiple tabs from polling in lockstep.
           timer = window.setTimeout(() => {
             timer = null
             void load()
-          }, delay)
+          }, delay + Math.random() * 250)
         }
         const load = async () => {
-          if (!alive || loading || document.visibilityState === 'hidden') return
+          if (!alive) return
+          if (loading || document.visibilityState === 'hidden') return
+          if (busyRef.current) {
+            schedule(1000)
+            return
+          }
           loading = true
           try {
             const current = snapshotRef.current
@@ -972,9 +1181,10 @@ window.__ModuleLoader__.load({
               : {
                   instanceId: current.instanceId,
                   outputSeq: current.outputSeq,
+                  outputOffset: current.outputOffset,
                   activeId: current.activeId,
                   presetsSeq: current.presetsSeq,
-                }, POLL_TIMEOUT_MS)
+                }, POLL_TIMEOUT_MS, abort.signal)
             if (!alive) return
             failures = 0
             updateSnapshot(next)
@@ -1002,6 +1212,7 @@ window.__ModuleLoader__.load({
         void load()
         return () => {
           alive = false
+          abort.abort()
           stop()
           document.removeEventListener('visibilitychange', onVisibility)
         }
@@ -1196,84 +1407,21 @@ window.__ModuleLoader__.load({
                     onClick: startNew,
                   }, t('presets.new')),
                 ])
-                : presets.map((preset, index) => {
-                  const active = preset.id === activeId
-                  const enabled = preset.enabled === true
-                  const running = preset.running === true
-                  return h('div', { key: preset.id, style: active ? S.presetActive : S.preset }, [
-                    h('button', {
-                      key: 'toggle',
-                      type: 'button',
-                      role: 'switch',
-                      'aria-checked': enabled,
-                      title: enabled ? t('presets.toggleOff') : t('presets.toggleOn'),
-                      style: enabled ? S.presetSwitchOn : S.presetSwitch,
-                      disabled: busy !== '',
-                      onClick: (event) => {
-                        event.stopPropagation()
-                        togglePreset(preset)
-                      },
-                    }, enabled ? t('presets.enabled') : t('presets.disabled')),
-                    h('div', {
-                      key: 'main',
-                      style: S.presetMain,
-                      role: 'button',
-                      tabIndex: 0,
-                      onClick: () => selectPreset(preset.id),
-                      onKeyDown: (event) => {
-                        if (event.key === 'Enter' || event.key === ' ') {
-                          event.preventDefault()
-                          selectPreset(preset.id)
-                        }
-                      },
-                    }, [
-                      h('div', { key: 'text', style: S.presetText }, [
-                        h('div', { key: 'name', style: S.presetName }, preset.name),
-                        h('div', { key: 'command', style: S.presetCommand },
-                          preview(preset.command) || t('preview.empty')),
-                        h('div', {
-                          key: 'state',
-                          style: running ? S.presetStateOn : S.presetState,
-                          title: preset.run?.error ?? undefined,
-                        }, `${t(`form.kind.${preset.kind ?? 'powershell'}`)} · ${t(`status.${preset.run?.status ?? 'idle'}`)}`),
-                      ]),
-                    ]),
-                    h('div', { key: 'actions', style: S.presetActions }, [
-                      h('button', {
-                        key: 'up',
-                        type: 'button',
-                        style: S.orderButton,
-                        title: t('presets.moveUp'),
-                        'aria-label': t('presets.moveUp'),
-                        disabled: busy !== '' || index === 0,
-                        onClick: () => movePreset(preset, 'up'),
-                      }, '↑'),
-                      h('button', {
-                        key: 'down',
-                        type: 'button',
-                        style: S.orderButton,
-                        title: t('presets.moveDown'),
-                        'aria-label': t('presets.moveDown'),
-                        disabled: busy !== '' || index === presets.length - 1,
-                        onClick: () => movePreset(preset, 'down'),
-                      }, '↓'),
-                      h('button', {
-                        key: 'edit',
-                        type: 'button',
-                        style: S.smallButton,
-                        disabled: busy !== '',
-                        onClick: () => startEdit(preset),
-                      }, t('presets.edit')),
-                      h('button', {
-                        key: 'delete',
-                        type: 'button',
-                        style: confirmId === preset.id ? S.smallDanger : S.smallButton,
-                        disabled: busy !== '',
-                        onClick: () => removePreset(preset.id),
-                      }, confirmId === preset.id ? t('presets.confirmDelete') : t('presets.delete')),
-                    ]),
-                  ])
-                })),
+                : presets.map((preset, index) => h(PresetRow, {
+                  key: preset.id,
+                  preset,
+                  index,
+                  last: index === presets.length - 1,
+                  active: preset.id === activeId,
+                  busy,
+                  confirming: confirmId === preset.id,
+                  t,
+                  onSelect: () => selectPreset(preset.id),
+                  onToggle: () => togglePreset(preset),
+                  onMove: (direction) => movePreset(preset, direction),
+                  onEdit: () => startEdit(preset),
+                  onRemove: () => removePreset(preset.id),
+                }))),
           ]),
           h('section', { key: 'output', style: S.outputPane }, [
             h('div', { key: 'header', style: S.outputHeader }, [
@@ -1321,115 +1469,34 @@ window.__ModuleLoader__.load({
             h('div', { key: 'hint', style: S.hint }, t('hint')),
           ]),
         ]),
-        draft === null ? null : h('div', {
-          key: 'editor-backdrop',
-          style: S.editorBackdrop,
-          onMouseDown: (event) => {
-            if (event.target === event.currentTarget && !busyRef.current) setDraft(null)
-          },
-        }, [
-          h('div', {
-            key: 'editor',
-            style: S.editor,
-            role: 'dialog',
-            'aria-modal': true,
-            'aria-label': draft.id === '' ? t('form.newTitle') : t('form.editTitle'),
-          }, [
-            h('div', { key: 'title', style: S.editorTitle },
-              draft.id === '' ? t('form.newTitle') : t('form.editTitle')),
-            h('div', { key: 'name-field', style: S.field }, [
-              h('label', { key: 'label', style: S.label }, t('form.name')),
-              h('input', {
-                key: 'input',
-                style: S.input,
-                value: draft.name,
-                placeholder: t('form.namePlaceholder'),
-                maxLength: LIMITS.name,
-                autoFocus: true,
-                autoComplete: 'off',
-                onChange: (event) => setDraft({ ...draft, name: event.target.value }),
-              }),
-            ]),
-            h('div', { key: 'kind-field', style: S.field }, [
-              h('label', { key: 'label', style: S.label }, t('form.kind')),
-              h('select', {
-                key: 'select',
-                style: S.input,
-                value: draft.kind ?? 'powershell',
-                onChange: (event) => setDraft({ ...draft, kind: event.target.value }),
-              }, ['powershell', 'cmd', 'bash', 'python'].map((kind) => h('option', {
-                key: kind,
-                value: kind,
-              }, t(`form.kind.${kind}`)))),
-            ]),
-            h('div', { key: 'command-field', style: S.field }, [
-              h('label', { key: 'label', style: S.label }, t('form.command')),
-              h('textarea', {
-                key: 'textarea',
-                style: S.textarea,
-                value: draft.command,
-                placeholder: t('form.commandPlaceholder'),
-                spellCheck: false,
-                maxLength: LIMITS.command,
-                onChange: (event) => setDraft({ ...draft, command: event.target.value }),
-              }),
-            ]),
-            h('div', { key: 'cwd-field', style: S.field }, [
-              h('label', { key: 'label', style: S.label }, t('form.cwd')),
-              h('input', {
-                key: 'input',
-                style: S.input,
-                value: draft.cwd,
-                placeholder: t('form.cwdPlaceholder'),
-                maxLength: LIMITS.cwd,
-                autoComplete: 'off',
-                spellCheck: false,
-                onChange: (event) => setDraft({ ...draft, cwd: event.target.value }),
-              }),
-            ]),
-            h('div', { key: 'interpreter-field', style: S.field }, [
-              h('label', { key: 'label', style: S.label }, t('form.interpreter')),
-              h('input', {
-                key: 'input',
-                style: S.input,
-                value: draft.interpreter ?? '',
-                placeholder: t('form.interpreterPlaceholder'),
-                maxLength: LIMITS.interpreter,
-                autoComplete: 'off',
-                spellCheck: false,
-                onChange: (event) => setDraft({ ...draft, interpreter: event.target.value }),
-              }),
-            ]),
-            h('div', { key: 'actions', style: S.editorActions }, [
-              h('button', {
-                key: 'cancel',
-                type: 'button',
-                style: S.button,
-                disabled: busy !== '',
-                onClick: () => setDraft(null),
-              }, t('action.cancel')),
-              h('button', {
-                key: 'save',
-                type: 'button',
-                style: S.primaryButton,
-                disabled: busy !== '',
-                onClick: saveDraft,
-              }, busy === 'save' ? t('busy.save') : t('action.save')),
-            ]),
-          ]),
-        ]),
+        draft === null ? null : h(PresetEditor, {
+          key: 'editor',
+          draft,
+          busy,
+          error: actionError,
+          t,
+          setDraft,
+          onSave: saveDraft,
+        }),
       ])
     }
 
     return {
       inject: ['slots', 'locale', 'theme'],
       apply(ctx) {
-        // A live namespace keeps the dictionaries registered by the previous
-        // instance during a reinstall; the first registration wins.
+        // A reload can briefly run beside the previous client instance. A
+        // fresh namespace per apply lets both keep their dictionaries until
+        // the old instance is disposed, instead of failing the second
+        // registration.
+        const namespace = `${NS}:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`
         let bound
         try {
-          ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'startup-command: locale')
-          bound = ctx.locale.bind(NS)
+          ctx.effect(() => ctx.locale.register(namespace, { zh, en }), 'startup-command: locale')
+        } catch {
+          // Fall back to the bundled dictionary below.
+        }
+        try {
+          bound = ctx.locale.bind(namespace)
         } catch {
           // Fall back to the bundled dictionary below.
         }
@@ -1445,25 +1512,23 @@ window.__ModuleLoader__.load({
           }
           return format(fallbackDictionary[key] ?? key, params)
         }
+        const subscribeLocale = (listener) => ctx.locale.subscribe(listener)
+        const getTheme = () => ctx.theme.getTheme()
+        const subscribeTheme = (listener) => ctx.on('theme/change', listener)
 
         ctx.slots.inject('main', () => ctx.slots.register({
           name: 'main',
           key: PANEL_ID,
-          locale: NS,
+          locale: namespace,
           label: () => t('panel.title'),
           order: 20,
-          inject: () => ({
-            t,
-            subscribeLocale: (listener) => ctx.locale.subscribe(listener),
-            getTheme: () => ctx.theme.getTheme(),
-            subscribeTheme: (listener) => ctx.on('theme/change', listener),
-          }),
+          inject: () => ({ t, subscribeLocale, getTheme, subscribeTheme }),
         }, StartupPanel))
 
         ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
           name: 'sidebar.panellist',
           id: PANEL_ID,
-          locale: NS,
+          locale: namespace,
           label: () => t('panel.title'),
           order: 20,
         }, StartupSidebarIcon))
@@ -1471,4 +1536,3 @@ window.__ModuleLoader__.load({
     }
   },
 })
-

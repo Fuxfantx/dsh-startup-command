@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Startup command",
-    "description": "Runs enabled PowerShell, CMD, Bash and Python presets in order when DSH starts, shows live output and preset controls, and terminates each managed process tree on stop, restart, disable, delete, or exit."
+    "description": "Runs enabled PowerShell, CMD, Bash and Python presets in order when DSH starts, with live output and preset management in a left-sidebar page."
   }
 }

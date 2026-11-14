@@ -1,6 +1,6 @@
 # DSH Startup command — Install / 安装
 
-Version / 版本: **1.8.0**
+Version / 版本: **1.8.1**
 
 ## Offline / 离线安装
 
